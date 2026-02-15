@@ -1,0 +1,12 @@
+discord.py
+python-dotenv
+llama-cpp-python
+huggingface_hub
+chromadb
+google-genai
+jishaku
+optimum[onnxruntime]
+websockets
+tf-keras
+peft>=0.15.0
+ddgs
