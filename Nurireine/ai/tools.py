@@ -400,6 +400,9 @@ def calculate(expression: str) -> str:
             'log': math.log,
             'log10': math.log10,
             'exp': math.exp,
+        }
+        
+        allowed_constants = {
             'pi': math.pi,
             'e': math.e,
         }
@@ -429,8 +432,9 @@ def calculate(expression: str) -> str:
                 args = [eval_node(arg) for arg in node.args]
                 return allowed_functions[func_name](*args)
             elif isinstance(node, ast.Name):
-                if node.id in allowed_functions:
-                    return allowed_functions[node.id]
+                # Check constants first
+                if node.id in allowed_constants:
+                    return allowed_constants[node.id]
                 raise ValueError(f"알 수 없는 변수: {node.id}")
             elif isinstance(node, ast.List):
                 return [eval_node(item) for item in node.elts]
@@ -676,7 +680,7 @@ def get_tool_declarations() -> types.Tool:
                 "인터넷에서 최신 정보를 검색합니다. "
                 "다음과 같은 경우 반드시 사용하세요:\n"
                 "- 최근 뉴스, 사건, 이벤트\n"
-                "- 실시간 정보 (날씨 제외, 날씨는 get_current_time 사용)\n"
+                "- 실시간 정보 (날씨, 환율 등)\n"
                 "- 사실 확인이 필요한 정보\n"
                 "- 최신 데이터나 통계\n"
                 "- 모르는 사실이나 개념 설명\n"
