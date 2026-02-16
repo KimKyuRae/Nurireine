@@ -2,11 +2,12 @@
 Tool System for Nurireine
 
 Provides extensible tool/function calling capabilities for the LLM.
-Currently supports:
-- Web Search (via DDGS)
-- GitHub Search (Users & Repositories, with web search fallback)
-- YouTube Search (via DDGS videos)
-- Current Date/Time
+
+Tool Categories:
+1. Search Tools: web_search, github_search, youtube_search, news_search, image_search
+2. Utility Tools: get_current_time, calculate
+3. Translation Tools: translate_text
+4. Memory Tools: search_memory, get_chat_history
 
 To add a new tool:
 1. Create a function in this file
@@ -362,15 +363,275 @@ async def get_chat_history(limit: int = 10) -> str:
         return f"대화 이력 조회 중 오류가 발생했습니다: {e}"
 
 
+def calculate(expression: str) -> str:
+    """
+    Perform mathematical calculations.
+    Supports basic arithmetic, powers, and common math functions.
+    """
+    try:
+        # Safe evaluation - only allow math operations
+        import ast
+        import math
+        import operator
+        
+        # Allowed operators and functions
+        allowed_operators = {
+            ast.Add: operator.add,
+            ast.Sub: operator.sub,
+            ast.Mult: operator.mul,
+            ast.Div: operator.truediv,
+            ast.Pow: operator.pow,
+            ast.USub: operator.neg,
+            ast.UAdd: operator.pos,
+            ast.Mod: operator.mod,
+            ast.FloorDiv: operator.floordiv,
+        }
+        
+        allowed_functions = {
+            'abs': abs,
+            'round': round,
+            'max': max,
+            'min': min,
+            'sum': sum,
+            'sqrt': math.sqrt,
+            'sin': math.sin,
+            'cos': math.cos,
+            'tan': math.tan,
+            'log': math.log,
+            'log10': math.log10,
+            'exp': math.exp,
+            'pi': math.pi,
+            'e': math.e,
+        }
+        
+        def eval_node(node):
+            if isinstance(node, ast.Num):
+                return node.n
+            elif isinstance(node, ast.Constant):
+                return node.value
+            elif isinstance(node, ast.BinOp):
+                left = eval_node(node.left)
+                right = eval_node(node.right)
+                op = allowed_operators.get(type(node.op))
+                if op:
+                    return op(left, right)
+                raise ValueError(f"지원하지 않는 연산자: {type(node.op).__name__}")
+            elif isinstance(node, ast.UnaryOp):
+                operand = eval_node(node.operand)
+                op = allowed_operators.get(type(node.op))
+                if op:
+                    return op(operand)
+                raise ValueError(f"지원하지 않는 단항 연산자: {type(node.op).__name__}")
+            elif isinstance(node, ast.Call):
+                func_name = node.func.id if isinstance(node.func, ast.Name) else None
+                if func_name not in allowed_functions:
+                    raise ValueError(f"지원하지 않는 함수: {func_name}")
+                args = [eval_node(arg) for arg in node.args]
+                return allowed_functions[func_name](*args)
+            elif isinstance(node, ast.Name):
+                if node.id in allowed_functions:
+                    return allowed_functions[node.id]
+                raise ValueError(f"알 수 없는 변수: {node.id}")
+            elif isinstance(node, ast.List):
+                return [eval_node(item) for item in node.elts]
+            else:
+                raise ValueError(f"지원하지 않는 표현식 타입: {type(node).__name__}")
+        
+        # Parse and evaluate
+        tree = ast.parse(expression, mode='eval')
+        result = eval_node(tree.body)
+        
+        # Format result
+        if isinstance(result, float):
+            if result.is_integer():
+                return f"계산 결과: {int(result)}"
+            else:
+                return f"계산 결과: {result:.10g}"
+        else:
+            return f"계산 결과: {result}"
+    
+    except SyntaxError:
+        return f"수식 오류: 올바른 수식이 아닙니다. ({expression})"
+    except ZeroDivisionError:
+        return "계산 오류: 0으로 나눌 수 없습니다."
+    except Exception as e:
+        logger.error(f"Calculate error: {type(e).__name__}: {e}")
+        return f"계산 중 오류가 발생했습니다: {e}"
+
+
+def translate_text(text: str, target_language: str = "ko") -> str:
+    """
+    Translate text to a target language using web search fallback.
+    """
+    try:
+        # Try to get translation result via web search
+        DDGS = _get_ddgs()
+        
+        # Build translation query
+        if target_language.lower() in ['ko', 'korean', '한국어']:
+            search_query = f"translate to Korean: {text}"
+            target_lang_name = "한국어"
+        elif target_language.lower() in ['en', 'english', '영어']:
+            search_query = f"translate to English: {text}"
+            target_lang_name = "영어"
+        elif target_language.lower() in ['ja', 'japanese', '일본어']:
+            search_query = f"translate to Japanese: {text}"
+            target_lang_name = "일본어"
+        elif target_language.lower() in ['zh', 'chinese', '중국어']:
+            search_query = f"translate to Chinese: {text}"
+            target_lang_name = "중국어"
+        else:
+            search_query = f"translate to {target_language}: {text}"
+            target_lang_name = target_language
+        
+        with DDGS() as ddgs:
+            # Use DDGS translate if available
+            try:
+                results = ddgs.translate(text, to=target_language[:2])
+                if results:
+                    translated = results[0].get('translated', '') if isinstance(results, list) else results
+                    if translated:
+                        return f"번역 결과 ({target_lang_name}): {translated}"
+            except (AttributeError, KeyError):
+                pass
+            
+            # Fallback to web search
+            results = list(ddgs.text(search_query, max_results=3))
+        
+        if not results:
+            return f"'{text}'의 번역 결과를 찾을 수 없습니다."
+        
+        # Extract translation from search results
+        formatted = [f"번역 검색 결과:"]
+        for i, r in enumerate(results, 1):
+            title = r.get('title', '')
+            body = r.get('body', '')
+            formatted.append(f"{i}. {body[:200]}")
+        
+        return "\n".join(formatted)
+    
+    except ImportError:
+        return "번역 기능을 사용할 수 없습니다. (pip install ddgs)"
+    except Exception as e:
+        logger.error(f"Translation error: {type(e).__name__}: {e}")
+        return f"번역 중 오류가 발생했습니다: {e}"
+
+
+def news_search(query: str, max_results: int = 5) -> str:
+    """Search for news articles using DDGS news search."""
+    try:
+        DDGS = _get_ddgs()
+        
+        with DDGS() as ddgs:
+            # Use DDGS news search if available
+            try:
+                results = list(ddgs.news(query, max_results=max_results))
+            except (AttributeError, TypeError):
+                # Fallback to regular search with "news" keyword
+                results = list(ddgs.text(f"{query} news", max_results=max_results))
+        
+        if not results:
+            return f"'{query}'에 대한 뉴스 검색 결과가 없습니다."
+        
+        formatted = [f"뉴스 검색 결과 ({len(results)}건):"]
+        
+        for i, article in enumerate(results, 1):
+            title = article.get('title', '제목 없음')
+            body = article.get('body', '') or article.get('description', '')
+            url = article.get('url', '') or article.get('href', '')
+            date = article.get('date', '')
+            source = article.get('source', '')
+            
+            entry = f"\n{i}. {title}"
+            if body:
+                entry += f"\n   {body[:200]}"
+            
+            info_parts = []
+            if source:
+                info_parts.append(f"출처: {source}")
+            if date:
+                info_parts.append(f"날짜: {date}")
+            if info_parts:
+                entry += f"\n   {' | '.join(info_parts)}"
+            
+            if url:
+                entry += f"\n   링크: {url}"
+            
+            formatted.append(entry)
+        
+        return "\n".join(formatted)
+    
+    except ImportError:
+        return "뉴스 검색 기능을 사용할 수 없습니다. (pip install ddgs)"
+    except Exception as e:
+        logger.error(f"News search error: {type(e).__name__}: {e}")
+        return f"뉴스 검색 중 오류가 발생했습니다: {e}"
+
+
+def image_search(query: str, max_results: int = 5) -> str:
+    """Search for images using DDGS image search."""
+    try:
+        DDGS = _get_ddgs()
+        
+        with DDGS() as ddgs:
+            results = list(ddgs.images(query, max_results=max_results))
+        
+        if not results:
+            return f"'{query}'에 대한 이미지 검색 결과가 없습니다."
+        
+        formatted = [f"이미지 검색 결과 ({len(results)}건):"]
+        
+        for i, img in enumerate(results, 1):
+            title = img.get('title', '제목 없음')
+            url = img.get('image', '') or img.get('url', '')
+            source = img.get('source', '')
+            width = img.get('width', '')
+            height = img.get('height', '')
+            
+            entry = f"\n{i}. {title}"
+            
+            info_parts = []
+            if width and height:
+                info_parts.append(f"크기: {width}x{height}")
+            if source:
+                info_parts.append(f"출처: {source}")
+            if info_parts:
+                entry += f"\n   {' | '.join(info_parts)}"
+            
+            if url:
+                entry += f"\n   링크: {url}"
+            
+            formatted.append(entry)
+        
+        return "\n".join(formatted)
+    
+    except ImportError:
+        return "이미지 검색 기능을 사용할 수 없습니다. (pip install ddgs)"
+    except Exception as e:
+        logger.error(f"Image search error: {type(e).__name__}: {e}")
+        return f"이미지 검색 중 오류가 발생했습니다: {e}"
+
+
 # =============================================================================
 # Tool Registry
 # =============================================================================
 
 TOOL_REGISTRY: Dict[str, Any] = {
+    # Search Tools
     "web_search": web_search,
     "github_search": github_search,
     "youtube_search": youtube_search,
+    "news_search": news_search,
+    "image_search": image_search,
+    
+    # Utility Tools
     "get_current_time": get_current_time,
+    "calculate": calculate,
+    
+    # Translation Tools
+    "translate_text": translate_text,
+    
+    # Memory Tools
     "search_memory": search_memory,
     "get_chat_history": get_chat_history,
 }
@@ -419,20 +680,46 @@ async def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
 def get_tool_declarations() -> types.Tool:
     """Build Gemini-compatible tool declarations for all registered tools."""
     declarations = [
+        # === Search Tools ===
         types.FunctionDeclaration(
             name="web_search",
             description=(
                 "인터넷에서 최신 정보를 검색합니다. "
-                "사용자가 최근 뉴스, 실시간 정보, 모르는 사실, "
-                "또는 최신 데이터가 필요한 질문을 할 때 사용하세요. "
-                "자신(누리레느)에 대한 질문이나 일상 대화에는 사용하지 마세요. "
+                "다음과 같은 경우 반드시 사용하세요:\n"
+                "- 최근 뉴스, 사건, 이벤트\n"
+                "- 실시간 정보 (날씨 제외, 날씨는 get_current_time 사용)\n"
+                "- 사실 확인이 필요한 정보\n"
+                "- 최신 데이터나 통계\n"
+                "- 모르는 사실이나 개념 설명\n"
+                "주의: 자신(누리레느)에 대한 질문이나 일상 대화에는 사용하지 마세요."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
                     "query": types.Schema(
                         type=types.Type.STRING,
-                        description="검색할 키워드 또는 문장 (주제에 맞는 언어로 작성)"
+                        description="검색할 키워드 또는 문장 (영어 또는 한국어, 주제에 맞는 언어 사용)"
+                    ),
+                },
+                required=["query"]
+            )
+        ),
+        types.FunctionDeclaration(
+            name="news_search",
+            description=(
+                "최신 뉴스 기사를 검색합니다. "
+                "다음과 같은 경우 사용하세요:\n"
+                "- 최근 뉴스나 사건\n"
+                "- 언론 보도 내용\n"
+                "- 시사 이슈\n"
+                "일반 웹 검색보다 뉴스 전문 검색을 원할 때 사용합니다."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "query": types.Schema(
+                        type=types.Type.STRING,
+                        description="검색할 뉴스 키워드"
                     ),
                 },
                 required=["query"]
@@ -441,8 +728,12 @@ def get_tool_declarations() -> types.Tool:
         types.FunctionDeclaration(
             name="github_search",
             description=(
-                "GitHub에서 사용자(개발자) 또는 레포지토리(오픈소스 프로젝트)를 검색합니다. "
-                "특정 개발자의 프로필, 오픈소스 프로젝트, 프로그래밍 관련 검색에 사용하세요. "
+                "GitHub에서 개발자 또는 오픈소스 프로젝트를 검색합니다. "
+                "다음과 같은 경우 사용하세요:\n"
+                "- 특정 개발자의 프로필 찾기\n"
+                "- 오픈소스 프로젝트 검색\n"
+                "- 프로그래밍 라이브러리나 도구 찾기\n"
+                "- GitHub 레포지토리 정보"
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
@@ -453,7 +744,7 @@ def get_tool_declarations() -> types.Tool:
                     ),
                     "search_type": types.Schema(
                         type=types.Type.STRING,
-                        description="검색 유형: 'users' (사용자/개발자) 또는 'repositories' (레포지토리/프로젝트). 기본값: 'users'",
+                        description="검색 유형: 'users' (개발자) 또는 'repositories' (프로젝트). 기본값: 'users'",
                         enum=["users", "repositories"]
                     ),
                 },
@@ -463,8 +754,12 @@ def get_tool_declarations() -> types.Tool:
         types.FunctionDeclaration(
             name="youtube_search",
             description=(
-                "YouTube 및 기타 영상 플랫폼에서 영상을 검색합니다. "
-                "사용자가 영상, 강좌, 뮤직비디오, 또는 영상 콘텐츠를 찾을 때 사용하세요. "
+                "YouTube에서 영상을 검색합니다. "
+                "다음과 같은 경우 사용하세요:\n"
+                "- 영상 콘텐츠 찾기\n"
+                "- 강의나 튜토리얼\n"
+                "- 뮤직비디오\n"
+                "- 동영상 리뷰나 설명"
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
@@ -478,11 +773,33 @@ def get_tool_declarations() -> types.Tool:
             )
         ),
         types.FunctionDeclaration(
+            name="image_search",
+            description=(
+                "이미지를 검색합니다. "
+                "사용자가 이미지, 사진, 그림 등을 찾을 때 사용하세요."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "query": types.Schema(
+                        type=types.Type.STRING,
+                        description="검색할 이미지 키워드"
+                    ),
+                },
+                required=["query"]
+            )
+        ),
+        
+        # === Utility Tools ===
+        types.FunctionDeclaration(
             name="get_current_time",
             description=(
                 "현재 날짜와 시간을 확인합니다. "
-                "사용자가 '오늘 며칠이야?', '지금 몇 시야?', '무슨 요일이야?' 등 "
-                "날짜나 시간에 관한 질문을 할 때 반드시 이 도구를 사용하세요. "
+                "다음과 같은 경우 반드시 사용하세요:\n"
+                "- '오늘 며칠이야?', '지금 몇 시야?'\n"
+                "- '무슨 요일이야?'\n"
+                "- 날짜나 시간 관련 질문\n"
+                "주의: 시간 정보는 항상 이 도구로 확인하세요. 추측하지 마세요."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
@@ -490,18 +807,69 @@ def get_tool_declarations() -> types.Tool:
             )
         ),
         types.FunctionDeclaration(
+            name="calculate",
+            description=(
+                "수학 계산을 수행합니다. "
+                "다음과 같은 경우 반드시 사용하세요:\n"
+                "- 사칙연산 (덧셈, 뺄셈, 곱셈, 나눗셈)\n"
+                "- 거듭제곱, 제곱근\n"
+                "- 삼각함수 (sin, cos, tan)\n"
+                "- 로그 함수 (log, log10)\n"
+                "지원 함수: abs, round, max, min, sum, sqrt, sin, cos, tan, log, log10, exp, pi, e\n"
+                "예: '2 + 3', 'sqrt(16)', 'sin(pi/2)', '2**10'"
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "expression": types.Schema(
+                        type=types.Type.STRING,
+                        description="계산할 수식 (예: '2 + 3 * 4', 'sqrt(16)', 'sin(pi/2)')"
+                    ),
+                },
+                required=["expression"]
+            )
+        ),
+        
+        # === Translation Tools ===
+        types.FunctionDeclaration(
+            name="translate_text",
+            description=(
+                "텍스트를 다른 언어로 번역합니다. "
+                "사용자가 번역을 요청할 때 사용하세요."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "text": types.Schema(
+                        type=types.Type.STRING,
+                        description="번역할 텍스트"
+                    ),
+                    "target_language": types.Schema(
+                        type=types.Type.STRING,
+                        description="목표 언어 (예: 'ko', 'en', 'ja', 'zh'). 기본값: 'ko'"
+                    ),
+                },
+                required=["text"]
+            )
+        ),
+        
+        # === Memory Tools ===
+        types.FunctionDeclaration(
             name="search_memory",
             description=(
                 "장기 기억(L3)에서 관련 정보를 검색합니다. "
-                "사용자가 과거에 대한 질문, 자신의 설정/배경/생일 등에 대한 질문, "
-                "또는 이전에 저장된 사실이 필요할 때 사용하세요. "
+                "다음과 같은 경우 사용하세요:\n"
+                "- 사용자의 과거 정보나 설정\n"
+                "- 사용자의 선호도, 생일 등\n"
+                "- 이전 대화에서 저장된 사실\n"
+                "- '내 ~이 뭐였지?' 같은 질문"
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
                     "query": types.Schema(
                         type=types.Type.STRING,
-                        description="검색할 키워드 또는 질문 (한국어로 작성)"
+                        description="검색할 키워드 또는 질문"
                     ),
                 },
                 required=["query"]
@@ -511,9 +879,11 @@ def get_tool_declarations() -> types.Tool:
             name="get_chat_history",
             description=(
                 "현재 채널의 최근 대화 이력을 가져옵니다. "
-                "사용자가 '방금 뭐라고 했어?', '아까 말한 거 뭐야?' 등 "
-                "구체적인 최근 대화 내용이나 정확한 문구를 물어볼 때만 사용하세요. "
-                "일상 대화에서는 사용하지 마세요. "
+                "다음과 같은 경우만 사용하세요:\n"
+                "- '방금 뭐라고 했어?'\n"
+                "- '아까 말한 거 뭐야?'\n"
+                "- 최근 대화의 정확한 내용 확인\n"
+                "주의: 일반 대화에서는 사용하지 마세요. L1 버퍼는 이미 제공됩니다."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
