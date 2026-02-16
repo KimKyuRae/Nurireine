@@ -88,13 +88,8 @@ class Gatekeeper:
         """Initialize the SLM for detailed analysis."""
         if config.slm.provider == "gemini":
             logger.info("Using Gemini API for Gatekeeper (SLM bypassed).")
-            # Initialize Gemini client specifically for Gatekeeper
-            # Use rotation logic if multiple keys exist
-            self._gemini_api_keys = config.llm.api_keys
-            if not self._gemini_api_keys:
-                logger.error("No Gemini API keys found for Gatekeeper!")
-                self._slm = None # Will fail later if called
-                return
+            from .llm_service import LLMService
+            self.llm_service = LLMService()
             return
 
         repo_id = repo_id or config.slm.model_repo
@@ -139,75 +134,48 @@ class Gatekeeper:
             logger.error(f"Failed to download SLM: {e}")
             raise
 
-    def check_response_needed(
+    async def check_response_needed(
         self, 
         context: str, 
         current_input: str
     ) -> Tuple[bool, float, float]:
         """
-        Quickly check if response is needed using BERT.
-        
-        Returns:
-            Tuple of (is_needed, confidence_score, latency_seconds)
+        Quickly check if response is needed using BERT (Async wrapper).
         """
         if not self._classifier:
-            # Fallback if BERT failed to load
             return True, 0.0, 0.0
         
-
-            
         start_time = time.perf_counter()
-        
-            # Pipeline handles [CLS]/[SEP] mostly, but we join with [SEP] for structure
         text = f"{context} [SEP] {current_input}"
         
-        logger.info(f"BERT Gatekeeper input text length: {len(text)}")
-        
         try:
-            # Run inference
-            # Truncate to 512 tokens max (BERT limit)
-            logger.info("Running BERT classifier inference...")
-            result = self._classifier(text, truncation=True, max_length=512, top_k=None)
-            logger.info("BERT classifier inference finished.")
+            # Run blocking inference in executor
+            loop = asyncio.get_running_loop()
             
-            # Result format depends on pipeline, usually list of dicts for text-classification
-            # e.g. [{'label': 'LABEL_1', 'score': 0.9}, {'label': 'LABEL_0', 'score': 0.1}]
-            # Assuming LABEL_1 = Response Needed, LABEL_0 = Ignore
+            def _run_inference():
+                return self._classifier(text, truncation=True, max_length=512, top_k=None)
             
-            # Map labels if needed (check model card)
-            # For "SapoKR/kcbert-munmaeg-onnx", let's assume probability of "response"
+            result = await loop.run_in_executor(None, _run_inference)
             
-            # Flatten if nested list
             if isinstance(result, list) and isinstance(result[0], list):
                 result = result[0]
-                
-            # Find score for positive class
-            # Just taking the top label for now
+            
             top_result = result[0] if isinstance(result, list) else result
             
             label = top_result['label']
             score = top_result['score']
-            
-            # Adapt this based on actual model behavior
-            # If model returns "LABEL_1" for True
             is_positive = label in ['LABEL_1', 'POSITIVE', 'response_needed']
-            
-            # Using threshold
             threshold = config.slm.bert_threshold
             is_needed = is_positive and score >= threshold
             
-            # If label logic is inverted or specific, adjust here.
-            # Assuming default binary classification where 1 is "yes".
-            
         except Exception as e:
             logger.error(f"BERT check failed: {e}")
-            # Fallback to responding if check fails
             return True, 0.0, 0.0
             
         latency = time.perf_counter() - start_time
         return is_needed, score, latency
 
-    def process_turn(
+    async def process_turn(
         self, 
         user_input: str, 
         current_summary: str, 
@@ -218,16 +186,7 @@ class Gatekeeper:
         skip_bert: bool = False
     ) -> Dict[str, Any]:
         """
-        Analyze user input and determine response strategy.
-        
-        Args:
-            user_input: The new user message
-            current_summary: Current L2 summary
-            recent_messages: List of recent message dicts
-            is_explicit: If True, bypass BERT check and force response
-            user_id: Discord user ID for fact attribution
-            user_name: Display name for context
-            skip_bert: If True, skip BERT check (already done by caller)
+        Analyze user input and determine response strategy (Async).
         """
         broadcast_event("gatekeeper_check", {"stage": "start", "input": user_input})
         
@@ -236,17 +195,8 @@ class Gatekeeper:
             is_needed = True
             score = 1.0
             latency = 0.0
-            if is_explicit:
-                logger.info("BERT check skipped due to explicit call.")
-            else:
-                logger.info("BERT check skipped (already done by plan_response).")
-            
-            broadcast_event("gatekeeper_check", {
-                "stage": "bert_skipped",
-                "reason": "explicit_call" if is_explicit else "already_checked"
-            })
         else:
-            # Prepare BERT Context (Content only, joined by [SEP])
+            # Prepare BERT Context
             bert_context_parts = []
             for msg in recent_messages:
                 content = msg.get('content', '')
@@ -255,8 +205,7 @@ class Gatekeeper:
                 bert_context_parts.append(content)
             bert_context = " [SEP] ".join(bert_context_parts)
             
-            is_needed, score, latency = self.check_response_needed(bert_context, user_input)
-            logger.info(f"BERT Gatekeeper: Needed={is_needed} (Score={score:.4f}, Latency={latency:.4f}s)")
+            is_needed, score, latency = await self.check_response_needed(bert_context, user_input)
             
             broadcast_event("gatekeeper_check", {
                 "stage": "bert_result",
@@ -270,11 +219,8 @@ class Gatekeeper:
             return self._empty_result()
         
         # Stage 2: Detailed Analysis (SLM or Gemini)
-        
-        # Strip bot call names from user_input to prevent SLM confusion
         cleaned_input = self._strip_call_names(user_input)
         
-        # Prepare context for analysis
         slm_history_lines = []
         for msg in recent_messages:
             role = msg.get('role', 'user').upper()
@@ -282,21 +228,21 @@ class Gatekeeper:
             if role == 'USER' and msg.get('user_name'):
                 role = msg['user_name']
             elif role == 'ASSISTANT':
-                role = "Nurireine" # Use bot name for SLM context clarity
+                role = "Nurireine"
             
             slm_history_lines.append(f"{role}: {content}")
             
         slm_history = "\n".join(slm_history_lines)
         
         if config.slm.provider == "gemini":
-            return self._run_gemini_analysis(cleaned_input, current_summary, slm_history, user_id, user_name)
+            return await self._run_gemini_analysis(cleaned_input, current_summary, slm_history, user_id, user_name)
         else:
             if not self._slm:
                 logger.warning("Local SLM not loaded, using fallback response.")
                 return self._fallback_result()
-            return self._run_slm_analysis(cleaned_input, current_summary, slm_history, user_id, user_name)
+            return await self._run_slm_analysis(cleaned_input, current_summary, slm_history, user_id, user_name)
 
-    def _run_gemini_analysis(
+    async def _run_gemini_analysis(
         self, 
         user_input: str, 
         current_summary: str, 
@@ -304,13 +250,10 @@ class Gatekeeper:
         user_id: str = "unknown",
         user_name: str = "unknown"
     ) -> Dict[str, Any]:
-        """Run analysis using Gemini API."""
+        """Run analysis using Gemini API (Async with LLMService)."""
         broadcast_event("slm_process", {"stage": "start", "provider": "gemini"})
         
-        # Lazy import to avoid top-level dependency if not used (though used in LLM)
-        from google import genai
         from google.genai import types
-        import random
         
         prompt = config.SLM_GATEKEEPER_TEMPLATE.format(
             current_summary=current_summary,
@@ -320,51 +263,29 @@ class Gatekeeper:
             user_name=user_name
         )
         
-        MAX_RETRIES = 3
-        retry_delay = 2.0  # Initial delay in seconds
-
-        for attempt in range(MAX_RETRIES + 1):
-            try:
-                # Pick a random key for load balancing
-                api_key = random.choice(self._gemini_api_keys)
-                client = genai.Client(api_key=api_key)
-                
-                response = client.models.generate_content(
-                    model=config.slm.api_model_id, # e.g. gemini-2.5-flash
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        temperature=0.1, # Low temp for structured output
-                    )
-                )
-                
-                if response.text:
-                    result = json.loads(response.text)
-                    result = self._sanitize_output(result)
-                    broadcast_event("slm_process", {"stage": "end", "result": result})
-                    return result
-                else:
-                    logger.warning("Gemini Gatekeeper returned empty response.")
-                    # Only retry empty response if we want to, otherwise fallback
-                    if attempt == MAX_RETRIES:
-                        return self._fallback_result()
-    
-            except Exception as e:
-                error_str = str(e)
-                if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str.upper():
-                    if attempt < MAX_RETRIES:
-                        sleep_time = retry_delay * (2 ** attempt)
-                        logger.warning(f"Gemini API 429 (Resource Exhausted). Retrying in {sleep_time:.1f}s... (Attempt {attempt+1}/{MAX_RETRIES})")
-                        time.sleep(sleep_time)
-                        continue
-                
-                logger.error(f"Gemini Gatekeeper error (Attempt {attempt+1}): {e}")
-                if attempt == MAX_RETRIES:
-                    return self._fallback_result()
+        response = await self.llm_service.generate_content_async(
+            contents=prompt,
+            model=config.slm.api_model_id,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.1,
+            )
+        )
         
+        if response and response.text:
+            try:
+                result = json.loads(response.text)
+                result = self._sanitize_output(result)
+                broadcast_event("slm_process", {"stage": "end", "result": result})
+                return result
+            except json.JSONDecodeError:
+                 logger.error("Failed to parse JSON from Gemini Gatekeeper.")
+                 return self._fallback_result()
+        
+        logger.warning("Gemini Gatekeeper returned empty or null response.")
         return self._fallback_result()
 
-    def _run_slm_analysis(
+    async def _run_slm_analysis(
         self, 
         user_input: str, 
         current_summary: str, 
@@ -372,7 +293,7 @@ class Gatekeeper:
         user_id: str = "unknown",
         user_name: str = "unknown"
     ) -> Dict[str, Any]:
-        """Run full SLM analysis (Local) with continuation for truncated JSON."""
+        """Run full SLM analysis (Local) - Async wrapper."""
         broadcast_event("slm_process", {"stage": "start", "provider": "local"})
         
         prompt = config.SLM_GATEKEEPER_TEMPLATE.format(
@@ -382,67 +303,60 @@ class Gatekeeper:
             user_id=user_id,
             user_name=user_name
         )
+
+        def _blocking_slm_inference():
+            MAX_RETRIES = 2
+            MAX_CONTINUATIONS = 2
+            
+            for attempt in range(MAX_RETRIES + 1):
+                try:
+                    accumulated_text = ""
+                    current_prompt = prompt
+                    
+                    for cont in range(MAX_CONTINUATIONS + 1):
+                        output = self._slm(
+                            current_prompt,
+                            max_tokens=config.slm.max_tokens,
+                            stop=config.slm.stop_sequences,
+                            grammar=None, 
+                            echo=False,
+                            temperature=0.1,
+                            top_p=0.9,
+                            top_k=40
+                        )
+                        
+                        chunk = output['choices'][0]['text'].strip()
+                        accumulated_text += chunk
+                        
+                        # Try to parse the accumulated text
+                        result = self._try_parse_json(accumulated_text)
+                        if result is not None:
+                            result = self._sanitize_output(result)
+                            return result
+                        
+                        start_idx = accumulated_text.find('{')
+                        if start_idx == -1:
+                            break
+                        
+                        # JSON started but incomplete — continue generation
+                        partial_json = accumulated_text[start_idx:]
+                        current_prompt = prompt + "\n```json\n" + partial_json
+                    
+                    if attempt == MAX_RETRIES:
+                        return self._fallback_result()
+                    
+                except Exception as e:
+                    logger.error(f"SLM processing error (Attempt {attempt+1}): {e}")
+                    if attempt == MAX_RETRIES:
+                        return self._fallback_result()
+            return self._fallback_result()
+
+        # Run blocking inference in executor
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, _blocking_slm_inference)
         
-        MAX_RETRIES = 2
-        MAX_CONTINUATIONS = 2  # Max continuation attempts for truncated output
-        
-        for attempt in range(MAX_RETRIES + 1):
-            try:
-                accumulated_text = ""
-                current_prompt = prompt
-                
-                for cont in range(MAX_CONTINUATIONS + 1):
-                    output = self._slm(
-                        current_prompt,
-                        max_tokens=config.slm.max_tokens,
-                        stop=config.slm.stop_sequences,
-                        grammar=None, 
-                        echo=False,
-                        temperature=0.1,
-                        top_p=0.9,
-                        top_k=40
-                    )
-                    
-                    chunk = output['choices'][0]['text'].strip()
-                    accumulated_text += chunk
-                    
-                    if cont == 0:
-                        logger.debug(f"Gatekeeper output (Raw): {accumulated_text}")
-                    else:
-                        logger.debug(f"Gatekeeper continuation #{cont}: {chunk}")
-                    
-                    # Try to parse the accumulated text
-                    result = self._try_parse_json(accumulated_text)
-                    if result is not None:
-                        result = self._sanitize_output(result)
-                        broadcast_event("slm_process", {"stage": "end", "result": result})
-                        return result
-                    
-                    # Check if JSON is truncated (has '{' but incomplete)
-                    start_idx = accumulated_text.find('{')
-                    if start_idx == -1:
-                        # No JSON at all — break and retry
-                        logger.warning(f"No JSON found in SLM output (Attempt {attempt+1})")
-                        break
-                    
-                    # JSON started but incomplete — continue generation
-                    partial_json = accumulated_text[start_idx:]
-                    logger.info(f"SLM output truncated, continuing generation (cont #{cont+1})")
-                    
-                    # Feed the partial output back as prefix for continuation
-                    current_prompt = prompt + "\n```json\n" + partial_json
-                
-                # If we exhausted continuations without valid JSON
-                logger.warning(f"SLM output invalid after continuations (Attempt {attempt+1}/{MAX_RETRIES+1})")
-                if attempt == MAX_RETRIES:
-                    return self._fallback_result()
-                
-            except Exception as e:
-                logger.error(f"SLM processing error (Attempt {attempt+1}): {e}")
-                if attempt == MAX_RETRIES:
-                    return self._fallback_result()
-        
-        return self._fallback_result()
+        broadcast_event("slm_process", {"stage": "end", "result": result})
+        return result
     
     @staticmethod
     def _try_parse_json(text: str) -> Optional[Dict[str, Any]]:

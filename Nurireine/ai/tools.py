@@ -19,8 +19,9 @@ import logging
 import urllib.request
 import urllib.parse
 import urllib.error
+import asyncio
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any
+from typing import Dict, Any, Awaitable
 
 from google.genai import types
 
@@ -317,12 +318,12 @@ def get_current_time() -> str:
     )
 
 
-def search_memory(query: str) -> str:
-    """Search long-term memory (L3) for relevant facts."""
+async def search_memory(query: str) -> str:
+    """Search long-term memory (L3) for relevant facts (Async)."""
     if not _memory_manager:
         return "장기 기억 시스템이 비활성화되어 있습니다."
     try:
-        result = _memory_manager.retrieve_facts(
+        result = await _memory_manager.retrieve_facts(
             query, 
             guild_id=_current_guild_id, 
             user_id=_current_user_id
@@ -333,8 +334,8 @@ def search_memory(query: str) -> str:
         return f"기억 검색 중 오류가 발생했습니다: {e}"
 
 
-def get_chat_history(limit: int = 10) -> str:
-    """Retrieve recent chat history (L1 buffer) for current channel."""
+async def get_chat_history(limit: int = 10) -> str:
+    """Retrieve recent chat history (L1 buffer) for current channel (Async)."""
     if not _memory_manager:
         return "대화 이력 시스템이 비활성화되어 있습니다."
     if not _current_channel_id:
@@ -343,7 +344,7 @@ def get_chat_history(limit: int = 10) -> str:
         from .. import config
         # Clamp limit to a reasonable range
         limit = max(1, min(limit, config.memory.l1_buffer_limit))
-        buffer = _memory_manager.get_l1_buffer(_current_channel_id)
+        buffer = await _memory_manager.get_l1_buffer(_current_channel_id)
         recent = buffer[-limit:]
         if not recent:
             return "최근 대화 기록이 없습니다."
@@ -375,8 +376,8 @@ TOOL_REGISTRY: Dict[str, Any] = {
 }
 
 
-def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute a registered tool and return the result."""
+async def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute a registered tool and return the result (Async)."""
     func = TOOL_REGISTRY.get(name)
     if not func:
         logger.warning(f"Unknown tool requested: {name}")
@@ -386,7 +387,11 @@ def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         broadcast_event("tool_call", {"stage": "start", "tool": name, "args": args})
         logger.info(f"Executing tool: {name}({args})")
         
-        result = func(**args)
+        if asyncio.iscoroutinefunction(func):
+            result = await func(**args)
+        else:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, lambda: func(**args))
         
         broadcast_event("tool_call", {"stage": "end", "tool": name, "success": True})
         logger.info(f"Tool '{name}' completed successfully ({len(str(result))} chars)")

@@ -57,18 +57,16 @@ class Brain:
         loop = asyncio.get_running_loop()
         
         try:
+
             # Use lambda to pass all arguments
             context, analysis = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    lambda: self.memory.plan_response(
-                        channel_id, 
-                        content, 
-                        guild_id, 
-                        user_info.id, 
-                        user_info.name, 
-                        is_explicit=is_explicit
-                    )
+                self.memory.plan_response(
+                    channel_id, 
+                    content, 
+                    guild_id, 
+                    user_info.id, 
+                    user_info.name, 
+                    is_explicit=is_explicit
                 ),
                 timeout=config.bot.response_timeout
             )
@@ -110,23 +108,23 @@ class Brain:
         ):
             yield chunk
 
-    def save_interaction(
+    async def save_interaction(
         self,
         channel_id: int,
         user_input: str,
         model_output: str,
         user_info: UserInfo
     ):
-        """Save the turn to memory."""
+        """Save the turn to memory (Async)."""
         if self.memory:
-            self.memory.add_message(
+            await self.memory.add_message(
                 channel_id,
                 "user",
                 user_input,
                 user_name=user_info.name,
                 user_id=user_info.id
             )
-            self.memory.add_message(channel_id, "assistant", model_output)
+            await self.memory.add_message(channel_id, "assistant", model_output)
 
     def check_rate_limit(self, is_explicit: bool, analysis: Dict[str, Any]) -> bool:
         """

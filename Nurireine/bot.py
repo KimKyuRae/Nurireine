@@ -123,7 +123,7 @@ class Nurireine(commands.Bot):
         # Save memory state
         if self.memory:
             logger.info("Saving L2 memory to database...")
-            self.memory.save_all_summaries()
+            await self.memory.save_all_summaries()
         
         # Stop message handler
         await self._message_handler.stop_worker()
@@ -585,11 +585,8 @@ class Nurireine(commands.Bot):
             user_name = message.author.display_name
             
             # Use lambda to pass all arguments including user_name
-            context, analysis = await loop.run_in_executor(
-                None,
-                lambda: self.memory.plan_response(
-                    channel_id, content, guild_id, user_id, user_name, is_explicit=is_explicit
-                )
+            context, analysis = await self.memory.plan_response(
+                channel_id, content, guild_id, user_id, user_name, is_explicit=is_explicit
             )
             
             # Extract detailed stats if available
@@ -697,14 +694,14 @@ class Nurireine(commands.Bot):
             
             # Save to memory
             if self.memory:
-                self.memory.add_message(
+                await self.memory.add_message(
                     channel_id, 
                     "user", 
                     user_input, 
                     user_name=message.author.display_name,
                     user_id=str(message.author.id)
                 )
-                self.memory.add_message(channel_id, "assistant", processed_text)
+                await self.memory.add_message(channel_id, "assistant", processed_text)
             
             # Final Message Update/Send
             if len(processed_text) <= CHUNK_SIZE:

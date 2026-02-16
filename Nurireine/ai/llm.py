@@ -11,7 +11,10 @@ import asyncio
 from typing import List, Dict, Any, Optional, AsyncGenerator
 
 from google import genai
+from google import genai
 from google.genai import types
+
+from .tools import execute_tool, get_tool_declarations, set_tool_context
 
 
 from .. import config
@@ -37,74 +40,23 @@ class MainLLM:
     Supports multiple Gemini API keys with round-robin rotation.
     """
     
+    
     def __init__(self):
         """Initialize LLM clients."""
-        self._init_gemini_clients()
-        self._init_fallback()
+        from .llm_service import LLMService
+        self.llm_service = LLMService()
         
         self.system_prompt = config.LLM_SYSTEM_PROMPT
-        
-        logger.info(
-            f"MainLLM initialized. "
-            f"Primary: Gemini ({len(self._gemini_clients)} keys), "
-            f"Fallback: {'G4F' if self._fallback_client else 'Inactive'}"
-        )
-    
-    def _init_gemini_clients(self) -> None:
-        """Initialize Gemini clients for each API key."""
-        self._gemini_clients: List[genai.Client] = []
         self._gemini_model_id = config.llm.model_id
-        self._current_key_index = 0
         
-        api_keys = config.llm.api_keys
+        # Initialize tools
+        self.tool_declarations = get_tool_declarations()
         
-        if not api_keys:
-            logger.error("No GEMINI_API_KEY(s) set in environment variables.")
-            return
-        
-        for key in api_keys:
-            try:
-                # Initialize client with http_options version for consistency
-                client = genai.Client(api_key=key, http_options={'api_version': 'v1beta'})
-                self._gemini_clients.append(client)
-            except Exception as e:
-                logger.error(f"Failed to initialize Gemini client with key ...{key[-4:]}: {e}")
-                
-        if self._gemini_clients:
-            logger.info(f"Initialized {len(self._gemini_clients)} Gemini clients.")
-        else:
-            logger.error("Failed to initialize any Gemini clients.")
-
     def _get_next_gemini_client(self) -> Optional[genai.Client]:
-        """Get the next Gemini client in rotation."""
-        if not self._gemini_clients:
-            return None
-            
-        # Round-robin selection
-        client = self._gemini_clients[self._current_key_index]
-        self._current_key_index = (self._current_key_index + 1) % len(self._gemini_clients)
-        return client
+        """Deprecated: Handled by LLMService."""
+        logger.warning("_get_next_gemini_client is deprecated.")
+        return None
 
-    def _init_fallback(self) -> None:
-        """Initialize G4F fallback client."""
-        self._fallback_client = None
-        self._fallback_model_id = config.llm.fallback_model_id
-        
-        if not G4F_AVAILABLE:
-            logger.warning("g4f library not found. Fallback disabled. (pip install g4f)")
-            return
-        
-        try:
-            # Use AsyncClient with specific provider
-            self._fallback_client = G4FAsyncClient(provider=ApiAirforce)
-            logger.info(f"Fallback LLM (G4F) initialized: {self._fallback_model_id}")
-        except Exception as e:
-            # Try basic client if Async fails
-            try:
-                 self._fallback_client = G4FClient(provider=ApiAirforce)
-                 logger.warning(f"Fallback LLM (G4F) initialized in SYNC mode (Async failed): {e}")
-            except Exception as e2:
-                logger.error(f"Failed to initialize G4F client: {e2}")
     
     async def generate_response_stream(
         self, 
@@ -129,7 +81,6 @@ class MainLLM:
         
         # Set tool context so search_memory / get_chat_history can access MemoryManager
         if memory_manager:
-            from .tools import set_tool_context
             set_tool_context(
                 memory_manager,
                 channel_id=channel_id,
@@ -143,30 +94,21 @@ class MainLLM:
         l1_recent = context.get('l1_recent', [])
         
         # Try Gemini first
-        gemini_success = False
-        if self._gemini_clients:
-            try:
-                async for chunk in self._try_gemini_stream(user_input, system_instruction, l1_recent, context):
-                    gemini_success = True
-                    yield chunk
-            except Exception as e:
-                logger.error(f"Gemini stream error: {e}")
-        else:
-            logger.warning("No Gemini clients available, trying fallback.")
+        try:
+            async for chunk in self._try_gemini_stream(user_input, system_instruction, l1_recent, context):
+                gemini_success = True
+                yield chunk
+        except Exception as e:
+            logger.error(f"Gemini stream error: {e}")
+
         
         if gemini_success:
             return
 
-        # Try G4F fallback if Gemini failed (no chunks yielded)
-        logger.warning("Gemini produced no output, attempting G4F fallback...")
-        if self._fallback_client:
-            async for chunk in self._try_fallback_stream(user_input, system_instruction, l1_recent, context):
-                yield chunk
-            return
-
-        # Explicit failure message if everything fails
-        broadcast_event("llm_generate", {"stage": "fail"})
-        yield "죄송해요, 머리가 너무 아파서 아무 생각도 나지 않아요... (모든 AI 응답 실패)"
+        # Gemini failed (G4F fallback disabled by request)
+        logger.warning("Gemini produced no output. Reporting quota exhaustion.")
+        broadcast_event("llm_generate", {"stage": "fail_quota"})
+        yield "죄송해요, 지금은 대화량이 너무 많아서 잠시 쉬어야 할 것 같아요... (Gemini API 할당량 초과)"
 
     # Keep synchronous method for backward compatibility if needed, 
     # but eventually we should migrate fully.
@@ -240,132 +182,101 @@ class MainLLM:
     ) -> AsyncGenerator[str, None]:
         """Try to stream response using Gemini with key rotation and tool calling."""
         
-        max_attempts = len(self._gemini_clients)
+        # Prepare content
+        full_instruction, contents = self._prepare_gemini_request(
+            user_input, system_instruction, l1_recent, context
+        )
         
-        # Prepare tool declarations if enabled
-        tool_declarations = None
-        if config.llm.enable_tools:
-            try:
-                from .tools import get_tool_declarations, execute_tool
-                tool_declarations = get_tool_declarations()
-            except Exception as e:
-                logger.warning(f"Failed to load tools: {e}")
+        gemini_config = types.GenerateContentConfig(
+            system_instruction=full_instruction,
+            temperature=config.llm.temperature,
+            tools=[self.tool_declarations] if self.tool_declarations else None,
+        )
         
-        for attempt in range(max_attempts):
-            client = self._get_next_gemini_client()
-            if not client:
-                continue
-                
-            try:
-                # Prepare content
-                full_instruction, contents = self._prepare_gemini_request(
-                    user_input, system_instruction, l1_recent, context
-                )
-                
-                gemini_config = types.GenerateContentConfig(
-                    system_instruction=full_instruction,
-                    temperature=config.llm.temperature,
-                    tools=[tool_declarations] if tool_declarations else None,
-                )
-                
-                # Allow multiple rounds of tool calling (max 3)
-                MAX_TOOL_ROUNDS = 3
-                current_contents = list(contents)
-                
-                for tool_round in range(MAX_TOOL_ROUNDS + 1):
-                    function_calls = []
-                    
-                    response = await client.aio.models.generate_content_stream(
-                        model=self._gemini_model_id,
-                        contents=current_contents,
-                        config=gemini_config,
-                    )
+        # Allow multiple rounds of tool calling (max 3)
+        MAX_TOOL_ROUNDS = 3
+        current_contents = list(contents)
+        
+        for tool_round in range(MAX_TOOL_ROUNDS + 1):
+            function_calls = []
+            
+            # Use LLMService for streaming generation with automatic rotation
+            response_stream = self.llm_service.generate_content_stream_async(
+                model=self._gemini_model_id,
+                contents=current_contents,
+                config=gemini_config,
+            )
 
-                    # Stream response, collecting any function calls
-                    async for chunk in response:
-                        # Yield text content
-                        try:
-                            if chunk.text:
-                                yield chunk.text
-                        except (ValueError, AttributeError):
-                            pass
-                        
-                        # Collect function calls from parts
-                        try:
-                            if chunk.candidates:
-                                for candidate in chunk.candidates:
-                                    if candidate.content and candidate.content.parts:
-                                        for part in candidate.content.parts:
-                                            if part.function_call:
-                                                function_calls.append(part.function_call)
-                        except (AttributeError, IndexError):
-                            pass
-                    
-                    # If no function calls were made, we're done
-                    if not function_calls:
-                        return
-                    
-                    # If max rounds reached, stop tool calling
-                    if tool_round >= MAX_TOOL_ROUNDS:
-                        logger.warning(f"Max tool rounds ({MAX_TOOL_ROUNDS}) reached, stopping.")
-                        return
-                    
-                    # Execute function calls and build conversation continuation
-                    logger.info(f"Tool round {tool_round + 1}: executing {len(function_calls)} tool call(s)")
-                    
-                    broadcast_event("llm_generate", {
-                        "stage": "tool_call",
-                        "round": tool_round + 1,
-                        "calls": [{"name": fc.name, "args": dict(fc.args) if fc.args else {}} for fc in function_calls]
-                    })
-                    
-                    model_parts = []
-                    response_parts = []
-                    
-                    for fc in function_calls:
-                        fc_name = fc.name
-                        fc_args = dict(fc.args) if fc.args else {}
-                        
-                        # Rebuild the model's function call as a Part
-                        model_parts.append(
-                            types.Part(function_call=types.FunctionCall(
-                                name=fc_name, args=fc_args
-                            ))
-                        )
-                        
-                        # Execute the tool (blocking I/O, run in executor)
-                        loop = asyncio.get_running_loop()
-                        result = await loop.run_in_executor(
-                            None, lambda n=fc_name, a=fc_args: execute_tool(n, a)
-                        )
-                        
-                        # Build function response Part
-                        response_parts.append(
-                            types.Part(function_response=types.FunctionResponse(
-                                name=fc_name, response=result
-                            ))
-                        )
-                    
-                    # Append tool call + result to conversation for next round
-                    current_contents = current_contents + [
-                        types.Content(role="model", parts=model_parts),
-                        types.Content(role="user", parts=response_parts),
-                    ]
-                    
-                    logger.info(f"Tool results added to conversation, continuing generation...")
+            # Stream response, collecting any function calls
+            async for chunk in response_stream:
+                # Yield text content
+                try:
+                    if chunk.text:
+                        yield chunk.text
+                except (ValueError, AttributeError):
+                    pass
                 
-                # Finished all rounds
+                # Collect function calls from parts
+                try:
+                    if chunk.candidates:
+                        for candidate in chunk.candidates:
+                            if candidate.content and candidate.content.parts:
+                                for part in candidate.content.parts:
+                                    if part.function_call:
+                                        function_calls.append(part.function_call)
+                except (AttributeError, IndexError):
+                    pass
+            
+            # If no function calls were made, we're done
+            if not function_calls:
                 return
-
-            except Exception as e:
-                is_quota_error = "429" in str(e) or "ResourceExhausted" in str(type(e).__name__)
+            
+            # If max rounds reached, stop tool calling
+            if tool_round >= MAX_TOOL_ROUNDS:
+                logger.warning(f"Max tool rounds ({MAX_TOOL_ROUNDS}) reached, stopping.")
+                return
+            
+            # Execute function calls and build conversation continuation
+            logger.info(f"Tool round {tool_round + 1}: executing {len(function_calls)} tool call(s)")
+            
+            broadcast_event("llm_generate", {
+                "stage": "tool_call",
+                "round": tool_round + 1,
+                "calls": [{"name": fc.name, "args": dict(fc.args) if fc.args else {}} for fc in function_calls]
+            })
+            
+            model_parts = []
+            response_parts = []
+            
+            for fc in function_calls:
+                fc_name = fc.name
+                fc_args = dict(fc.args) if fc.args else {}
                 
-                if is_quota_error:
-                    logger.warning(f"Gemini quota exceeded (Attempt {attempt+1}/{max_attempts}). Rotating key...")
-                    continue
-                else:
-                    logger.error(f"Gemini API failed: {type(e).__name__}: {e}")
-                    continue
+                # Rebuild the model's function call as a Part
+                model_parts.append(
+                    types.Part(function_call=types.FunctionCall(
+                        name=fc_name, args=fc_args
+                    ))
+                )
+                
+                # Execute the tool (Async)
+                result = await execute_tool(fc_name, fc_args)
+                
+                # Build function response Part
+                response_parts.append(
+                    types.Part(function_response=types.FunctionResponse(
+                        name=fc_name, response=result
+                    ))
+                )
+            
+            # Append tool call + result to conversation for next round
+            current_contents = current_contents + [
+                types.Content(role="model", parts=model_parts),
+                types.Content(role="user", parts=response_parts),
+            ]
+            
+            logger.info(f"Tool results added to conversation, continuing generation...")
+
         
         # If loop finishes, all attempts failed.
         # Generator just ends empty.
@@ -446,10 +357,10 @@ class MainLLM:
             
             logger.info(f"Generating streaming response with G4F fallback")
             
-            if hasattr(self._fallback_client, "chat"):
+            if hasattr(self.llm_service.fallback_client, "chat"):
                  # Async client usage
-                 response = self._fallback_client.chat.completions.create(
-                    model=self._fallback_model_id,
+                 response = self.llm_service.fallback_client.chat.completions.create(
+                    model=self.llm_service.fallback_model_id,
                     messages=messages,
                     stream=True
                 )
@@ -460,6 +371,7 @@ class MainLLM:
             else:
                 # Sync client fallback usage (not real streaming but chunked return)
                 yield "G4F fallback does not support async streaming in this configuration."
+
 
         except Exception as e:
             logger.error(f"Fallback LLM failed: {type(e).__name__}: {e}")

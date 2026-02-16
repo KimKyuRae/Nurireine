@@ -72,7 +72,7 @@ class ContextManager:
             # Add to memory (most recent ones)
             channel_id = channel.id
             for msg_data in merged_history[-self.context_limit:]:
-                memory.add_message(channel_id, msg_data["role"], msg_data["content"])
+                await memory.add_message(channel_id, msg_data["role"], msg_data["content"])
             
             logger.info(f"Synced {len(merged_history[-self.context_limit:])} messages from #{channel.name}")
             return True
