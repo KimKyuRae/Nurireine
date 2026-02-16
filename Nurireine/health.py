@@ -114,9 +114,9 @@ class HealthChecker:
                 "llm": "healthy" if self.llm_healthy else "unavailable"
             },
             "last_operations": {
-                "analysis": self.last_analysis_time.isoformat() if self.last_analysis_time else None,
-                "response": self.last_response_time.isoformat() if self.last_response_time else None,
-                "database": self.last_db_operation.isoformat() if self.last_db_operation else None
+                "analysis": self.last_analysis_time.strftime('%Y-%m-%d %H:%M:%S') if self.last_analysis_time else None,
+                "response": self.last_response_time.strftime('%Y-%m-%d %H:%M:%S') if self.last_response_time else None,
+                "database": self.last_db_operation.strftime('%Y-%m-%d %H:%M:%S') if self.last_db_operation else None
             },
             "statistics": {
                 "success_counts": self.success_counts,
