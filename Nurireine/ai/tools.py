@@ -421,7 +421,9 @@ def calculate(expression: str) -> str:
                     return op(operand)
                 raise ValueError(f"지원하지 않는 단항 연산자: {type(node.op).__name__}")
             elif isinstance(node, ast.Call):
-                func_name = node.func.id if isinstance(node.func, ast.Name) else None
+                if not isinstance(node.func, ast.Name):
+                    raise ValueError("지원하지 않는 함수 호출 형식입니다.")
+                func_name = node.func.id
                 if func_name not in allowed_functions:
                     raise ValueError(f"지원하지 않는 함수: {func_name}")
                 args = [eval_node(arg) for arg in node.args]
@@ -462,7 +464,6 @@ def translate_text(text: str, target_language: str = "ko") -> str:
     Translate text to a target language using web search fallback.
     """
     try:
-        # Try to get translation result via web search
         DDGS = _get_ddgs()
         
         # Build translation query
@@ -482,29 +483,19 @@ def translate_text(text: str, target_language: str = "ko") -> str:
             search_query = f"translate to {target_language}: {text}"
             target_lang_name = target_language
         
+        # Use web search for translation results
         with DDGS() as ddgs:
-            # Use DDGS translate if available
-            try:
-                results = ddgs.translate(text, to=target_language[:2])
-                if results:
-                    translated = results[0].get('translated', '') if isinstance(results, list) else results
-                    if translated:
-                        return f"번역 결과 ({target_lang_name}): {translated}"
-            except (AttributeError, KeyError):
-                pass
-            
-            # Fallback to web search
             results = list(ddgs.text(search_query, max_results=3))
         
         if not results:
             return f"'{text}'의 번역 결과를 찾을 수 없습니다."
         
         # Extract translation from search results
-        formatted = [f"번역 검색 결과:"]
+        formatted = [f"번역 검색 결과 ({target_lang_name}):"]
         for i, r in enumerate(results, 1):
-            title = r.get('title', '')
             body = r.get('body', '')
-            formatted.append(f"{i}. {body[:200]}")
+            if body:
+                formatted.append(f"{i}. {body[:200]}")
         
         return "\n".join(formatted)
     
