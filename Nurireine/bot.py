@@ -762,8 +762,8 @@ class Nurireine(commands.Bot):
             try:
                 # If we fail to edit, try sending new
                 await message.channel.send("메시지 전송 중 오류가 발생했습니다.")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f'Failed to send fallback message: {e}')
         except Exception as e:
             logger.error(f"Response generation error: {e}", exc_info=True)
             self.health.record_response(success=False)

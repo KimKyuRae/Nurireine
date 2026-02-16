@@ -2,11 +2,13 @@
 Input Validation Module
 
 Provides validation utilities for user inputs, configuration, and data sanitization.
+
+Requirements: Python 3.9+ (for PEP 585 type hints)
 """
 
 import re
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +21,7 @@ class InputValidator:
     """
     
     # Allowed characters in user names (prevent injection in embeddings)
-    USERNAME_PATTERN = re.compile(r'^[\w\s\-\_가-힣ぁ-んァ-ヶー一-龯]+$', re.UNICODE)
+    USERNAME_PATTERN = re.compile(r'^[\w\s\-_가-힣ぁ-んァ-ヶー一-龯]+$', re.UNICODE)
     
     # Maximum lengths
     MAX_INPUT_LENGTH = 2000
@@ -27,7 +29,7 @@ class InputValidator:
     MAX_CHANNEL_NAME_LENGTH = 100
     
     @staticmethod
-    def validate_message_content(content: str) -> tuple[bool, Optional[str]]:
+    def validate_message_content(content: str) -> Tuple[bool, Optional[str]]:
         """
         Validate message content.
         
@@ -50,7 +52,7 @@ class InputValidator:
         return True, None
     
     @staticmethod
-    def validate_username(username: str) -> tuple[bool, Optional[str]]:
+    def validate_username(username: str) -> Tuple[bool, Optional[str]]:
         """
         Validate username for safe embedding storage.
         
@@ -99,7 +101,7 @@ class InputValidator:
         return text
     
     @staticmethod
-    def validate_user_id(user_id: str) -> tuple[bool, Optional[str]]:
+    def validate_user_id(user_id: str) -> Tuple[bool, Optional[str]]:
         """
         Validate Discord user ID format.
         
@@ -123,7 +125,7 @@ class InputValidator:
         return True, None
     
     @staticmethod
-    def validate_channel_id(channel_id: int) -> tuple[bool, Optional[str]]:
+    def validate_channel_id(channel_id: int) -> Tuple[bool, Optional[str]]:
         """
         Validate Discord channel ID.
         
@@ -143,7 +145,7 @@ class InputValidator:
         return True, None
     
     @staticmethod
-    def validate_context_dict(context: Dict[str, Any]) -> tuple[bool, Optional[str]]:
+    def validate_context_dict(context: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         """
         Validate context dictionary for LLM input.
         
@@ -178,7 +180,7 @@ class ConfigValidator:
     """
     
     @staticmethod
-    def validate_api_key(api_key: str, service: str = "API") -> tuple[bool, Optional[str]]:
+    def validate_api_key(api_key: str, service: str = "API") -> Tuple[bool, Optional[str]]:
         """
         Validate API key format.
         
@@ -203,7 +205,7 @@ class ConfigValidator:
         return True, None
     
     @staticmethod
-    def validate_model_id(model_id: str) -> tuple[bool, Optional[str]]:
+    def validate_model_id(model_id: str) -> Tuple[bool, Optional[str]]:
         """
         Validate LLM model ID format.
         
@@ -223,7 +225,7 @@ class ConfigValidator:
         return True, None
     
     @staticmethod
-    def validate_temperature(temperature: float) -> tuple[bool, Optional[str]]:
+    def validate_temperature(temperature: float) -> Tuple[bool, Optional[str]]:
         """
         Validate temperature parameter.
         

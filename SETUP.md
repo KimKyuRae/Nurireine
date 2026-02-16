@@ -16,7 +16,7 @@ Nurireine은 Discord AI 챗봇으로, 3계층 메모리 시스템과 AI 기반 �
 ## 시스템 요구사항
 
 ### 최소 요구사항
-- **Python**: 3.10 이상
+- **Python**: 3.9 이상 (PEP 585 타입 힌트 사용)
 - **메모리**: 4GB RAM (GPU 사용 시 8GB 권장)
 - **저장 공간**: 10GB (모델 저장용)
 - **OS**: Windows, Linux, macOS
