@@ -405,9 +405,7 @@ def calculate(expression: str) -> str:
         }
         
         def eval_node(node):
-            if isinstance(node, ast.Num):
-                return node.n
-            elif isinstance(node, ast.Constant):
+            if isinstance(node, ast.Constant):
                 return node.value
             elif isinstance(node, ast.BinOp):
                 left = eval_node(node.left)
