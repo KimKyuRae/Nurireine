@@ -139,11 +139,43 @@ class MainLLM:
         return "".join(chunks)
 
     def _build_system_instruction(self, context: Dict[str, Any]) -> str:
-        """Build the system instruction from persona and memory context."""
-        from datetime import datetime, timezone, timedelta
+        """
+        Build the system instruction from persona and memory context.
         
-        l3_facts = context.get('l3_facts', '')
-        l2_summary = context.get('l2_summary', '')
+        Args:
+            context: Context dictionary with memory layers and user info
+            
+        Returns:
+            Complete system instruction string
+        """
+        from datetime import datetime, timezone, timedelta
+        from ..validation import input_validator
+        
+        # Validate context
+        valid, error = input_validator.validate_context_dict(context)
+        if not valid:
+            logger.error(f"Invalid context: {error}")
+            # Use minimal valid context
+            context = {
+                'user_id': 'unknown',
+                'user_name': 'Unknown',
+                'l3_facts': '',
+                'l2_summary': '',
+                'l1_recent': []
+            }
+        
+        # Safely get values with defaults
+        l3_facts = context.get('l3_facts') or ''
+        l2_summary = context.get('l2_summary') or ''
+        
+        # Validate types
+        if not isinstance(l3_facts, str):
+            logger.warning(f"l3_facts is not a string: {type(l3_facts)}")
+            l3_facts = str(l3_facts) if l3_facts else ''
+        
+        if not isinstance(l2_summary, str):
+            logger.warning(f"l2_summary is not a string: {type(l2_summary)}")
+            l2_summary = str(l2_summary) if l2_summary else ''
         
         # Always include current date/time so the model knows "today"
         kst = timezone(timedelta(hours=9))

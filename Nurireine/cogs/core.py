@@ -69,14 +69,41 @@ class CoreCommands(commands.Cog):
     )
     async def show_status(self, ctx: commands.Context) -> None:
         """Show the bot's current status."""
+        from ..health import get_health_checker
+        
+        health = get_health_checker()
+        status = health.get_status()
+        
         embed = discord.Embed(
             title="🔧 Nurireine 상태",
-            color=discord.Color.teal()
+            color=discord.Color.green() if status["status"] == "healthy" else discord.Color.orange()
         )
         
-        # AI Status
-        ai_status = "✅ 온라인" if self.bot._ai_loaded else "⏳ 로딩 중..."
-        embed.add_field(name="AI 시스템", value=ai_status, inline=True)
+        # Overall status
+        status_emoji = "✅" if status["status"] == "healthy" else "⚠️"
+        embed.add_field(
+            name="전체 상태", 
+            value=f"{status_emoji} {status['status'].upper()}", 
+            inline=True
+        )
+        
+        # Uptime
+        uptime_hours = status["uptime_seconds"] / 3600
+        embed.add_field(
+            name="가동 시간", 
+            value=f"{uptime_hours:.1f}시간", 
+            inline=True
+        )
+        
+        # AI Systems
+        ai_systems = status["ai_systems"]
+        ai_status_text = (
+            f"로딩: {'✅' if ai_systems['loaded'] else '❌'}\n"
+            f"게이트키퍼: {ai_systems['gatekeeper']}\n"
+            f"메모리: {ai_systems['memory']}\n"
+            f"LLM: {ai_systems['llm']}"
+        )
+        embed.add_field(name="AI 시스템", value=ai_status_text, inline=True)
         
         # Active channel for this guild
         if ctx.guild and ctx.guild.id in self.bot.active_channels:
@@ -96,6 +123,18 @@ class CoreCommands(commands.Cog):
                 value=f"L1: {l1_channels}개 채널\nL2: {l2_channels}개 채널", 
                 inline=True
             )
+        
+        # Statistics
+        stats = status["statistics"]
+        embed.add_field(
+            name="통계",
+            value=(
+                f"분석: {stats['success_counts']['analyses']}회\n"
+                f"응답: {stats['success_counts']['responses']}회\n"
+                f"오류: {stats['total_errors']}회"
+            ),
+            inline=True
+        )
         
         await ctx.send(embed=embed)
     

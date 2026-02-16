@@ -20,6 +20,7 @@ from .debug_server import get_server, broadcast_event
 from .core import MessageHandler, ContextManager
 from .ai import Gatekeeper, MemoryManager, MainLLM
 from .utils.text import ultra_slim_extract, math_style_compress, replace_user_handles
+from .health import get_health_checker
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,9 @@ class Nurireine(commands.Bot):
         
         # LLM Rate Limiting: sliding window of call timestamps
         self._llm_call_timestamps: List[float] = []
+        
+        # Health checker
+        self.health = get_health_checker()
         
         logger.info("Nurireine initialized. AI systems set to lazy load.")
     
@@ -170,9 +174,24 @@ class Nurireine(commands.Bot):
         try:
             await self.loop.run_in_executor(None, self._init_ai_components)
             self._ai_loaded = True
+            
+            # Update health status
+            self.health.update_ai_status(
+                ai_loaded=True,
+                gatekeeper_healthy=self.gatekeeper is not None,
+                memory_healthy=self.memory is not None,
+                llm_healthy=self.llm is not None
+            )
+            
             logger.info("AI Core Systems Online.")
         except Exception as e:
             logger.error(f"Failed to load AI systems: {e}")
+            self.health.update_ai_status(
+                ai_loaded=False,
+                gatekeeper_healthy=False,
+                memory_healthy=False,
+                llm_healthy=False
+            )
     
     def _init_ai_components(self) -> None:
         """Initialize AI components (blocking, run in executor)."""
@@ -573,6 +592,7 @@ class Nurireine(commands.Bot):
         
         if not self.memory:
             logger.warning("Memory manager not initialized.")
+            self.health.record_analysis(success=False)
             return {
                 "l3_facts": "",
                 "l2_summary": "메모리 시스템이 비활성화되어 있습니다.",
@@ -594,10 +614,15 @@ class Nurireine(commands.Bot):
                 self.last_stats.update(analysis["_perf_stats"])
             
             self.last_stats["slm_total_duration"] = loop.time() - slm_start
+            
+            # Record successful analysis
+            self.health.record_analysis(success=True)
+            
             return context, analysis
             
         except Exception as e:
             logger.error(f"SLM Analysis Error: {e}")
+            self.health.record_analysis(success=False)
             # Return minimal valid context instead of empty strings
             # This ensures LLM can still generate coherent responses
             return {
@@ -728,14 +753,19 @@ class Nurireine(commands.Bot):
             
             self.last_stats["total_turnaround"] = time.time() - self.last_stats.get("process_start_wall", time.time())
             
+            # Record successful response
+            self.health.record_response(success=True)
+            
         except discord.HTTPException as e:
             logger.error(f"Failed to send/edit message: {e}")
+            self.health.record_response(success=False)
             try:
                 # If we fail to edit, try sending new
                 await message.channel.send("메시지 전송 중 오류가 발생했습니다.")
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f'Failed to send fallback error message: {e}')
         except Exception as e:
             logger.error(f"Response generation error: {e}", exc_info=True)
+            self.health.record_response(success=False)
             if is_explicit_call:
                 await message.reply("죄송해요, 응답을 생성하는 중에 문제가 생겼어요.")
