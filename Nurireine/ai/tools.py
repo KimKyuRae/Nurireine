@@ -426,7 +426,6 @@ def get_tool_declarations() -> types.Tool:
                 "사용자가 최근 뉴스, 실시간 정보, 모르는 사실, "
                 "또는 최신 데이터가 필요한 질문을 할 때 사용하세요. "
                 "자신(누리레느)에 대한 질문이나 일상 대화에는 사용하지 마세요. "
-                "이 도구를 호출할 때 사전 안내 멘트(예: '잠시만요', '찾아볼게요')를 하지 마시오. 최종 결과만 말하세요."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
@@ -444,7 +443,6 @@ def get_tool_declarations() -> types.Tool:
             description=(
                 "GitHub에서 사용자(개발자) 또는 레포지토리(오픈소스 프로젝트)를 검색합니다. "
                 "특정 개발자의 프로필, 오픈소스 프로젝트, 프로그래밍 관련 검색에 사용하세요. "
-                "이 도구를 호출할 때 사전 안내 멘트를 하지 마시오. 최종 결과만 말하세요."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
@@ -467,7 +465,6 @@ def get_tool_declarations() -> types.Tool:
             description=(
                 "YouTube 및 기타 영상 플랫폼에서 영상을 검색합니다. "
                 "사용자가 영상, 강좌, 뮤직비디오, 또는 영상 콘텐츠를 찾을 때 사용하세요. "
-                "이 도구를 호출할 때 사전 안내 멘트를 하지 마시오. 최종 결과만 말하세요."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
@@ -486,8 +483,6 @@ def get_tool_declarations() -> types.Tool:
                 "현재 날짜와 시간을 확인합니다. "
                 "사용자가 '오늘 며칠이야?', '지금 몇 시야?', '무슨 요일이야?' 등 "
                 "날짜나 시간에 관한 질문을 할 때 반드시 이 도구를 사용하세요. "
-                "절대로 추측하지 마세요. "
-                "이 도구를 호출할 때 사전 안내 멘트를 하지 마시오."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
@@ -500,7 +495,6 @@ def get_tool_declarations() -> types.Tool:
                 "장기 기억(L3)에서 관련 정보를 검색합니다. "
                 "사용자가 과거에 대한 질문, 자신의 설정/배경/생일 등에 대한 질문, "
                 "또는 이전에 저장된 사실이 필요할 때 사용하세요. "
-                "이 도구를 호출할 때 사전 안내 멘트를 하지 마시오. 최종 결과만 말하세요."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
@@ -520,7 +514,6 @@ def get_tool_declarations() -> types.Tool:
                 "사용자가 '방금 뭐라고 했어?', '아까 말한 거 뭐야?' 등 "
                 "구체적인 최근 대화 내용이나 정확한 문구를 물어볼 때만 사용하세요. "
                 "일상 대화에서는 사용하지 마세요. "
-                "이 도구를 호출할 때 사전 안내 멘트를 하지 마시오."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
