@@ -216,4 +216,6 @@ function_ko.md
 function.md
 IMPROVEMENT.md
 inspect_memory.py
-test*
+test*.py
+test*.txt
+!tests/
