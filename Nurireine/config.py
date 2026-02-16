@@ -87,7 +87,10 @@ class LLMConfig:
             # G4F might not need it, but robust setup usually implies official API
             pass 
         if "gemini" in self.model_id.lower() and not self.api_keys:
-             raise ValueError("GEMINI_API_KEY is missing in environment variables.")
+            import os
+            # Allow testing without API key if explicitly disabled
+            if os.getenv("SKIP_CONFIG_VALIDATION") != "true":
+                raise ValueError("GEMINI_API_KEY is missing in environment variables.")
 
 
 @dataclass

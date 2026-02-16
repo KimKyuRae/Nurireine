@@ -436,7 +436,44 @@ class MemoryManager:
     ) -> None:
         """
         Add a message to the L1 buffer (Async).
+        
+        Args:
+            channel_id: Discord channel ID
+            role: Message role ("user" or "assistant")
+            content: Message content
+            user_name: Optional user display name
+            user_id: Optional user ID
         """
+        from ..validation import input_validator
+        
+        # Validate inputs
+        valid, error = input_validator.validate_channel_id(channel_id)
+        if not valid:
+            logger.error(f"Invalid channel_id: {error}")
+            return
+        
+        if role not in ["user", "assistant"]:
+            logger.error(f"Invalid role: {role}")
+            return
+        
+        valid, error = input_validator.validate_message_content(content)
+        if not valid:
+            logger.warning(f"Invalid message content: {error}")
+            # Sanitize rather than reject
+            content = input_validator.sanitize_for_embedding(content)
+        
+        if user_name:
+            valid, error = input_validator.validate_username(user_name)
+            if not valid:
+                logger.warning(f"Invalid username: {error}")
+                user_name = user_name[:100]  # Truncate
+        
+        if user_id:
+            valid, error = input_validator.validate_user_id(user_id)
+            if not valid:
+                logger.warning(f"Invalid user_id: {error}")
+                user_id = None  # Drop invalid ID
+        
         async with self._l1_lock:
             buffer = self._l1_buffers.setdefault(channel_id, [])
             msg_data = {"role": role, "content": content}
