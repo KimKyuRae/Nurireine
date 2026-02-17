@@ -7,7 +7,7 @@ Tool Categories:
 1. Search Tools: web_search, github_search, youtube_search, news_search, image_search
 2. Utility Tools: get_current_time, calculate
 3. Translation Tools: translate_text
-4. Memory Tools: search_memory, get_chat_history
+4. Memory Tools: get_chat_history (search_memory removed - L3 facts auto-included in prompt)
 
 To add a new tool:
 1. Create a function in this file
@@ -528,7 +528,7 @@ TOOL_REGISTRY: Dict[str, Any] = {
     "translate_text": translate_text,
     
     # Memory Tools
-    "search_memory": search_memory,
+    # Note: search_memory removed - L3 facts automatically retrieved and included in prompt
     "get_chat_history": get_chat_history,
 }
 
@@ -728,27 +728,7 @@ def get_tool_declarations() -> types.Tool:
         ),
         
         # === Memory Tools ===
-        types.FunctionDeclaration(
-            name="search_memory",
-            description=(
-                "장기 기억(L3)에서 관련 정보를 검색합니다. "
-                "다음과 같은 경우 사용하세요:\n"
-                "- 사용자의 과거 정보나 설정\n"
-                "- 사용자의 선호도, 생일 등\n"
-                "- 이전 대화에서 저장된 사실\n"
-                "- '내 ~이 뭐였지?' 같은 질문"
-            ),
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "query": types.Schema(
-                        type=types.Type.STRING,
-                        description="검색할 키워드 또는 질문"
-                    ),
-                },
-                required=["query"]
-            )
-        ),
+        # Note: search_memory removed - L3 facts are automatically retrieved by SLM and included in prompt
         types.FunctionDeclaration(
             name="get_chat_history",
             description=(
