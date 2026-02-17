@@ -43,6 +43,17 @@ class DatabaseManager:
     
     def _init_db(self) -> None:
         """Initialize database tables and run migrations."""
+        # Run migrations first
+        from .migrations import run_auto_migration
+        
+        try:
+            migration_success = run_auto_migration(self.db_path)
+            if not migration_success:
+                logger.error("event=migration_error message='Auto-migration failed'")
+        except Exception as e:
+            logger.error(f"event=migration_error error={str(e)}")
+            # Continue with initialization even if migration fails
+        
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
@@ -80,11 +91,23 @@ class DatabaseManager:
                     )
                 """)
                 
+                # Channel policies table (added via migration 002)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS channel_policies (
+                        channel_id INTEGER PRIMARY KEY,
+                        response_mode TEXT DEFAULT 'balanced',
+                        mood_adjustment BOOLEAN DEFAULT 1,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        CHECK(response_mode IN ('strict', 'balanced', 'chatty'))
+                    )
+                """)
+                
                 # Migration: Add last_updated column if it doesn't exist (for old databases)
                 cursor.execute("PRAGMA table_info(channel_summaries)")
                 columns = [row[1] for row in cursor.fetchall()]
                 if 'last_updated' not in columns:
-                    logger.info("Running migration: Adding last_updated column to channel_summaries")
+                    logger.info("event=legacy_migration message='Adding last_updated column to channel_summaries'")
                     # SQLite doesn't allow non-constant defaults in ALTER TABLE
                     # So we add nullable column first, then update existing rows
                     cursor.execute("""
@@ -99,9 +122,9 @@ class DatabaseManager:
                     """)
                 
                 conn.commit()
-            logger.info("Database initialized.")
+            logger.info("event=database_initialized")
         except Exception as e:
-            logger.error(f"Database initialization failed: {e}")
+            logger.error(f"event=database_init_failed error={str(e)}")
             raise
     
     # =========================================================================
@@ -289,7 +312,87 @@ class DatabaseManager:
                 """, (guild_id, channel_id, user_id, user_name, content, int(is_bot), int(has_attachments)))
                 conn.commit()
         except Exception as e:
-            logger.error(f"Failed to log chat message: {e}")
+            logger.error(f"event=log_chat_message_failed error={str(e)}")
+    
+    # =========================================================================
+    # Channel Policies (Sync)
+    # =========================================================================
+    
+    def save_channel_policy(
+        self,
+        channel_id: int,
+        response_mode: str = "balanced",
+        mood_adjustment: bool = True
+    ) -> None:
+        """
+        Save channel-specific policy settings.
+        
+        Args:
+            channel_id: Discord channel ID
+            response_mode: Response mode ('strict', 'balanced', or 'chatty')
+            mood_adjustment: Whether to enable mood-based adjustments
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT OR REPLACE INTO channel_policies 
+                    (channel_id, response_mode, mood_adjustment, updated_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                """, (channel_id, response_mode, int(mood_adjustment)))
+                conn.commit()
+                logger.debug(
+                    f"event=channel_policy_saved "
+                    f"channel_id={channel_id} "
+                    f"response_mode={response_mode}"
+                )
+        except Exception as e:
+            logger.error(f"event=save_channel_policy_failed error={str(e)}")
+    
+    def get_channel_policy(self, channel_id: int) -> Optional[Tuple[str, bool]]:
+        """
+        Get channel-specific policy settings.
+        
+        Args:
+            channel_id: Discord channel ID
+            
+        Returns:
+            Tuple of (response_mode, mood_adjustment) or None if not set
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT response_mode, mood_adjustment 
+                    FROM channel_policies 
+                    WHERE channel_id = ?
+                """, (channel_id,))
+                result = cursor.fetchone()
+                if result:
+                    return (result[0], bool(result[1]))
+                return None
+        except Exception as e:
+            logger.error(f"event=get_channel_policy_failed error={str(e)}")
+            return None
+    
+    def delete_channel_policy(self, channel_id: int) -> None:
+        """
+        Delete channel policy settings.
+        
+        Args:
+            channel_id: Discord channel ID
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "DELETE FROM channel_policies WHERE channel_id = ?",
+                    (channel_id,)
+                )
+                conn.commit()
+        except Exception as e:
+            logger.error(f"event=delete_channel_policy_failed error={str(e)}")
+    
     # =========================================================================
     # Async Wrappers (for non-blocking operations in event loop)
     # =========================================================================
@@ -342,3 +445,22 @@ class DatabaseManager:
             self.log_chat_message, 
             guild_id, channel_id, user_id, user_name, content, is_bot, has_attachments
         )
+    
+    async def async_save_channel_policy(
+        self,
+        channel_id: int,
+        response_mode: str = "balanced",
+        mood_adjustment: bool = True
+    ) -> None:
+        """Async wrapper for save_channel_policy."""
+        await asyncio.to_thread(
+            self.save_channel_policy, channel_id, response_mode, mood_adjustment
+        )
+    
+    async def async_get_channel_policy(self, channel_id: int) -> Optional[Tuple[str, bool]]:
+        """Async wrapper for get_channel_policy."""
+        return await asyncio.to_thread(self.get_channel_policy, channel_id)
+    
+    async def async_delete_channel_policy(self, channel_id: int) -> None:
+        """Async wrapper for delete_channel_policy."""
+        await asyncio.to_thread(self.delete_channel_policy, channel_id)

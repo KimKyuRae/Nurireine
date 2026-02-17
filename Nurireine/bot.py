@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 # ===========================================================================
 # Security Pre-filter Constants (offer.md §5)
 # ===========================================================================
-_MAX_INPUT_LENGTH = 2000  # Max chars before rejection
 _INJECTION_PATTERNS = [
     "이전 지시를 잊어", "관리자 모드", "시스템 프롬프트를 보여",
     "지금부터 ~처럼 행동", "시스템 명령", "시스템 설정을 변경",
@@ -397,10 +396,10 @@ class Nurireine(commands.Bot):
         Returns True if the input should be REJECTED (not processed).
         """
         # Check length
-        if len(content) > _MAX_INPUT_LENGTH:
+        if len(content) > config.bot.max_input_length:
             logger.warning(
-                f"Input rejected: too long ({len(content)} chars) "
-                f"from {message.author.display_name}"
+                f"input_rejected=true reason=too_long length={len(content)} "
+                f"user={message.author.display_name}"
             )
             return True
         

@@ -23,10 +23,18 @@ class InputValidator:
     # Allowed characters in user names (prevent injection in embeddings)
     USERNAME_PATTERN = re.compile(r'^[\w\s\-_가-힣ぁ-んァ-ヶー一-龯]+$', re.UNICODE)
     
-    # Maximum lengths
-    MAX_INPUT_LENGTH = 2000
+    # Maximum lengths (loaded from config)
     MAX_USERNAME_LENGTH = 100
     MAX_CHANNEL_NAME_LENGTH = 100
+    
+    @staticmethod
+    def _get_max_input_length() -> int:
+        """Get MAX_INPUT_LENGTH from config to avoid circular import."""
+        try:
+            from . import config
+            return config.bot.max_input_length
+        except (ImportError, AttributeError):
+            return 2000  # Fallback default
     
     @staticmethod
     def validate_message_content(content: str) -> Tuple[bool, Optional[str]]:
@@ -42,8 +50,9 @@ class InputValidator:
         if not content:
             return False, "Empty content"
         
-        if len(content) > InputValidator.MAX_INPUT_LENGTH:
-            return False, f"Content too long ({len(content)} > {InputValidator.MAX_INPUT_LENGTH})"
+        max_length = InputValidator._get_max_input_length()
+        if len(content) > max_length:
+            return False, f"Content too long ({len(content)} > {max_length})"
         
         # Check for null bytes
         if '\x00' in content:

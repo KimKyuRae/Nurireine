@@ -138,13 +138,135 @@ class CoreCommands(commands.Cog):
         
         await ctx.send(embed=embed)
     
+    @commands.hybrid_command(
+        name='health',
+        description="봇의 간단한 상태 확인 (헬스체크)"
+    )
+    async def health_check(self, ctx: commands.Context) -> None:
+        """Quick health check endpoint."""
+        from ..health import get_health_checker
+        
+        health = get_health_checker()
+        is_healthy = health.is_healthy()
+        
+        status_emoji = "✅" if is_healthy else "⚠️"
+        status_text = "정상" if is_healthy else "일부 기능 제한"
+        
+        embed = discord.Embed(
+            title=f"{status_emoji} 헬스 체크",
+            description=f"상태: **{status_text}**",
+            color=discord.Color.green() if is_healthy else discord.Color.orange()
+        )
+        
+        # Basic component status
+        status = health.get_status()
+        ai_systems = status["ai_systems"]
+        
+        components = []
+        components.append(f"{'✅' if ai_systems['loaded'] else '❌'} AI 시스템")
+        components.append(f"{'✅' if ai_systems['llm'] == 'healthy' else '⚠️'} LLM")
+        components.append(f"{'✅' if ai_systems['memory'] == 'healthy' else '⚠️'} 메모리")
+        
+        embed.add_field(
+            name="구성 요소",
+            value="\n".join(components),
+            inline=False
+        )
+        
+        # Uptime
+        uptime_hours = status["uptime_seconds"] / 3600
+        embed.add_field(
+            name="가동 시간",
+            value=f"{uptime_hours:.1f}시간",
+            inline=True
+        )
+        
+        # Total operations
+        embed.add_field(
+            name="처리 완료",
+            value=f"{status['statistics']['total_operations']}건",
+            inline=True
+        )
+        
+        await ctx.send(embed=embed)
+    
+    @commands.hybrid_command(
+        name='stats',
+        description="상세한 성능 및 운영 통계를 확인합니다."
+    )
+    async def show_stats(self, ctx: commands.Context) -> None:
+        """Show detailed performance and operational statistics."""
+        from ..metrics import get_metrics_collector
+        
+        metrics = get_metrics_collector()
+        stats_dict = metrics.get_stats_dict()
+        
+        embed = discord.Embed(
+            title="📊 상세 통계",
+            description=f"수집 시작: {stats_dict['reset_info']['last_reset'][:19]}",
+            color=discord.Color.blue()
+        )
+        
+        # Response metrics
+        resp = stats_dict["response_metrics"]
+        embed.add_field(
+            name="🤖 응답 생성",
+            value=(
+                f"총 요청: {resp['total']}건\n"
+                f"성공: {resp['successful']}건\n"
+                f"실패: {resp['failed']}건\n"
+                f"실패율: {resp['failure_rate']}\n"
+                f"평균 응답 시간: {resp['avg_latency_ms']}ms\n"
+                f"P95 응답 시간: {resp['p95_latency_ms']}ms"
+            ),
+            inline=False
+        )
+        
+        # Retrieval metrics
+        retr = stats_dict["retrieval_metrics"]
+        embed.add_field(
+            name="🧠 메모리 검색",
+            value=(
+                f"총 검색: {retr['total']}건\n"
+                f"히트: {retr['hits']}건\n"
+                f"미스: {retr['misses']}건\n"
+                f"히트율: {retr['hit_rate']}"
+            ),
+            inline=True
+        )
+        
+        # Analysis metrics
+        anal = stats_dict["analysis_metrics"]
+        embed.add_field(
+            name="🔍 컨텍스트 분석",
+            value=(
+                f"총 분석: {anal['total']}건\n"
+                f"성공: {anal['successful']}건\n"
+                f"실패: {anal['failed']}건"
+            ),
+            inline=True
+        )
+        
+        # Uptime
+        embed.add_field(
+            name="⏱️ 가동 시간",
+            value=f"{stats_dict['uptime_hours']:.1f}시간",
+            inline=True
+        )
+        
+        # Reset info
+        next_reset = stats_dict['reset_info']['next_reset'][:19]
+        embed.set_footer(text=f"다음 리셋: {next_reset}")
+        
+        await ctx.send(embed=embed)
+    
     @commands.command(name="sync")
     @commands.is_owner()
     async def sync_commands(self, ctx: commands.Context) -> None:
         """(Owner Only) Sync slash commands to Discord."""
         await ctx.bot.tree.sync()
         await ctx.send("✅ Commands synced!")
-        logger.info("Slash commands synced.")
+        logger.info(f"event=commands_synced user={ctx.author.id}")
     
     @commands.hybrid_command(
         name='testtimer',

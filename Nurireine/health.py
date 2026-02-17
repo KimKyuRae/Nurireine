@@ -3,6 +3,7 @@ Health Check Module
 
 Provides health monitoring for Nurireine bot components.
 Can be queried to check if AI systems are loaded and operational.
+All logging uses key=value format for easy parsing.
 """
 
 import logging
@@ -49,6 +50,8 @@ class HealthChecker:
             "responses": 0,
             "memory_operations": 0
         }
+        
+        logger.info("event=health_checker_initialized")
     
     def update_ai_status(
         self, 
@@ -62,36 +65,51 @@ class HealthChecker:
         self.gatekeeper_healthy = gatekeeper_healthy
         self.memory_healthy = memory_healthy
         self.llm_healthy = llm_healthy
+        logger.info(
+            f"event=ai_status_updated "
+            f"ai_loaded={ai_loaded} "
+            f"gatekeeper={gatekeeper_healthy} "
+            f"memory={memory_healthy} "
+            f"llm={llm_healthy}"
+        )
     
     def record_analysis(self, success: bool = True):
         """Record an analysis attempt."""
         if success:
             self.success_counts["analyses"] += 1
             self.last_analysis_time = datetime.now()
+            logger.debug("event=analysis_recorded success=true")
         else:
             self.error_counts["analysis_errors"] += 1
+            logger.debug("event=analysis_recorded success=false")
     
     def record_response(self, success: bool = True):
         """Record a response generation attempt."""
         if success:
             self.success_counts["responses"] += 1
             self.last_response_time = datetime.now()
+            logger.debug("event=response_recorded success=true")
         else:
             self.error_counts["llm_errors"] += 1
+            logger.debug("event=response_recorded success=false")
     
     def record_memory_operation(self, success: bool = True):
         """Record a memory operation."""
         if success:
             self.success_counts["memory_operations"] += 1
+            logger.debug("event=memory_operation_recorded success=true")
         else:
             self.error_counts["memory_errors"] += 1
+            logger.debug("event=memory_operation_recorded success=false")
     
     def record_db_operation(self, success: bool = True):
         """Record a database operation."""
         if success:
             self.last_db_operation = datetime.now()
+            logger.debug("event=db_operation_recorded success=true")
         else:
             self.error_counts["db_errors"] += 1
+            logger.debug("event=db_operation_recorded success=false")
     
     def get_status(self) -> Dict[str, Any]:
         """Get comprehensive health status."""
@@ -104,7 +122,7 @@ class HealthChecker:
         ]
         overall_healthy = all(critical_systems)
         
-        return {
+        status = {
             "status": "healthy" if overall_healthy else "degraded",
             "uptime_seconds": uptime,
             "ai_systems": {
@@ -125,10 +143,20 @@ class HealthChecker:
                 "total_errors": sum(self.error_counts.values())
             }
         }
+        
+        logger.debug(
+            f"event=health_status_retrieved "
+            f"status={status['status']} "
+            f"uptime_seconds={uptime:.2f}"
+        )
+        
+        return status
     
     def is_healthy(self) -> bool:
         """Quick health check."""
-        return self.ai_loaded and (self.gatekeeper_healthy or self.llm_healthy)
+        healthy = self.ai_loaded and (self.gatekeeper_healthy or self.llm_healthy)
+        logger.debug(f"event=health_check_performed is_healthy={healthy}")
+        return healthy
 
 
 # Global health checker instance
