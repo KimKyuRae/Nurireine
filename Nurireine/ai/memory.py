@@ -913,16 +913,18 @@ class MemoryManager:
             l3_context = ""
             if should_retrieve:
                 t0 = time.time()
-                # If explicit query from SLM is missing, use user_input BUT clean it first
+                # If explicit query from SLM is missing, use enhanced keyword extraction
                 query = analysis.get("search_query")
-                if not query:
-                    from ..utils.text_cleaner import clean_query_text
-                    # Use cleaned input as fallback
-                    query = clean_query_text(user_input)
-                    # If cleaned query is empty (e.g. only mentions), use original input as last resort?
-                    # Or maybe skip? Let's use original if cleaned is empty to be safe, but usually cleaned is better.
+                if not query or query.strip() == "":
+                    from ..utils.text_cleaner import clean_query_text, extract_search_keywords
+                    # First clean the input (remove mentions, reply headers, etc.)
+                    cleaned = clean_query_text(user_input)
+                    # Then extract meaningful keywords for search
+                    query = extract_search_keywords(cleaned)
+                    # If still empty after extraction, use the cleaned input as last resort
                     if not query:
-                        query = user_input
+                        query = cleaned if cleaned else user_input
+                    logger.info(f"SLM search_query was empty, extracted fallback query: '{query}'")
 
                 logger.info(f"Retrieving L3 facts for query: '{query}' (Guild: {guild_id}, User: {user_id})")
                 l3_context = await self.retrieve_facts(query, guild_id, user_id)
