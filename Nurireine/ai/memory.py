@@ -884,58 +884,60 @@ class MemoryManager:
         )
         
         if should_analyze:
-            # Run full SLM analysis (summary update, fact extraction, retrieval check)
+            # === PHASE 1: Fast decision (response/retrieval + search query) ===
             t0 = time.time()
             analysis = await self._run_analysis(user_input, l2_summary.to_markdown(), l1_buffer, is_explicit, user_id=user_id, user_name=user_name)
-            stats["slm"] = time.time() - t0
+            stats["slm_phase1"] = time.time() - t0
             
             # Reset dirty counter
             self._dirty_counters[channel_id] = 0
             self._last_analysis_time[channel_id] = time.time()
             self._last_analysis_result[channel_id] = analysis
             
-            # Update L2 summary from SLM output
-            updates = analysis.get("summary_updates")
-            if updates and any(updates.values()):
-                valid_updates = {k: v for k, v in updates.items() if v}
-                if valid_updates:
-                    await self.update_l2_fields(
-                        channel_id,
-                        topic=valid_updates.get("topic"),
-                        mood=valid_updates.get("mood"),
-                        new_topic=valid_updates.get("new_topic"),
-                        new_point=valid_updates.get("new_point"),
-                        conversation_stage=valid_updates.get("stage")
-                    )
-            
-            # Retrieve L3 facts if needed
+            # Retrieve L3 facts if needed (blocking - needed for context)
             should_retrieve = analysis.get("retrieval_needed") or is_explicit
             l3_context = ""
             if should_retrieve:
                 t0 = time.time()
-                # If explicit query from SLM is missing, use user_input BUT clean it first
+                # Use SLM-provided query if available, otherwise fall back to cleaned user input
                 query = analysis.get("search_query")
-                if not query:
+                if not query or query.strip() == "":
                     from ..utils.text_cleaner import clean_query_text
-                    # Use cleaned input as fallback
+                    # Simple fallback: just clean the input (remove mentions, reply headers, etc.)
                     query = clean_query_text(user_input)
-                    # If cleaned query is empty (e.g. only mentions), use original input as last resort?
-                    # Or maybe skip? Let's use original if cleaned is empty to be safe, but usually cleaned is better.
                     if not query:
                         query = user_input
+                    logger.info(f"SLM search_query was empty, using cleaned input: '{query}' (from: '{user_input}')")
+                else:
+                    logger.info(f"Using SLM-provided search_query: '{query}'")
 
                 logger.info(f"Retrieving L3 facts for query: '{query}' (Guild: {guild_id}, User: {user_id})")
                 l3_context = await self.retrieve_facts(query, guild_id, user_id)
                 stats["l3_search"] = time.time() - t0
                 broadcast_event("memory_access", {"stage": "retrieved", "query": query, "found": bool(l3_context)})
             
-            # Save new facts
-            t0 = time.time()
-            if analysis.get("guild_facts") and guild_id:
-                await self.save_facts(analysis["guild_facts"], context_type="guild", context_id=guild_id)
-            if analysis.get("user_facts") and user_id:
-                await self.save_facts(analysis["user_facts"], context_type="user", context_id=user_id, guild_id=guild_id)
-            stats["l3_save"] = time.time() - t0
+            # === PHASE 2: Lazy extraction (facts + summary) - Run in background ===
+            # Capture consistent snapshot of conversation state for background task
+            # This avoids race conditions if l1_buffer is modified while extraction runs
+            l2_snapshot = l2_summary.to_markdown()
+            l1_snapshot = list(l1_buffer)  # Create a copy of the list
+            
+            # Schedule extraction to run asynchronously after response starts
+            extraction_task = asyncio.create_task(
+                self._run_lazy_extraction(
+                    channel_id, user_input, l2_snapshot, l1_snapshot,
+                    user_id, user_name, guild_id
+                )
+            )
+            # Add error handler to log exceptions with full traceback
+            def _log_extraction_error(task: asyncio.Task) -> None:
+                try:
+                    # Will raise if the task failed
+                    task.result()
+                except Exception as e:
+                    logger.error(f"Lazy extraction task failed: {e}", exc_info=True)
+            
+            extraction_task.add_done_callback(_log_extraction_error)
         else:
             # Skip full SLM analysis — BERT already confirmed response is needed
             logger.info(f"Skipping SLM analysis (dirty_count={dirty_count}/{analysis_interval}), BERT confirmed response needed")
@@ -1002,3 +1004,64 @@ class MemoryManager:
             user_name=user_name or "unknown",
             skip_bert=True  # BERT already checked in plan_response
         )
+    
+    async def _run_lazy_extraction(
+        self,
+        channel_id: int,
+        user_input: str,
+        l2_markdown: str,
+        l1_buffer: List[Dict[str, str]],
+        user_id: Optional[str],
+        user_name: Optional[str],
+        guild_id: Optional[int]
+    ) -> None:
+        """
+        Run Phase 2 extraction (facts + summary) in background.
+        This is called asynchronously after the response starts.
+        """
+        try:
+            logger.info(f"Starting lazy extraction for channel {channel_id}")
+            t0 = time.time()
+            
+            if not self.gatekeeper:
+                logger.warning("Gatekeeper unavailable for lazy extraction.")
+                return
+            
+            # Prepare messages
+            recent_messages = l1_buffer[-config.memory.l1_context_limit:]
+            
+            # Run Phase 2 extraction
+            extraction = await self.gatekeeper.run_extraction(
+                user_input, l2_markdown, recent_messages,
+                user_id=user_id or "unknown",
+                user_name=user_name or "unknown"
+            )
+            
+            extraction_time = time.time() - t0
+            logger.info(f"Lazy extraction completed in {extraction_time:.3f}s")
+            
+            # Update L2 summary from extraction
+            updates = extraction.get("summary_updates", {})
+            if updates and any(updates.values()):
+                valid_updates = {k: v for k, v in updates.items() if v}
+                if valid_updates:
+                    await self.update_l2_fields(
+                        channel_id,
+                        topic=valid_updates.get("topic"),
+                        mood=valid_updates.get("mood"),
+                        new_topic=valid_updates.get("new_topic"),
+                        new_point=valid_updates.get("new_point"),
+                        conversation_stage=valid_updates.get("stage")
+                    )
+            
+            # Save new facts
+            t0 = time.time()
+            if extraction.get("guild_facts") and guild_id:
+                await self.save_facts(extraction["guild_facts"], context_type="guild", context_id=guild_id)
+            if extraction.get("user_facts") and user_id:
+                await self.save_facts(extraction["user_facts"], context_type="user", context_id=user_id, guild_id=guild_id)
+            save_time = time.time() - t0
+            logger.info(f"Facts saved in {save_time:.3f}s")
+            
+        except Exception as e:
+            logger.error(f"Error in lazy extraction for channel {channel_id}: {e}", exc_info=True)

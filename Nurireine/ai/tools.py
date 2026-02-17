@@ -7,7 +7,7 @@ Tool Categories:
 1. Search Tools: web_search, github_search, youtube_search, news_search, image_search
 2. Utility Tools: get_current_time, calculate
 3. Translation Tools: translate_text
-4. Memory Tools: search_memory, get_chat_history
+4. Memory Tools: get_chat_history (legacy search_memory implementation remains in this file but is intentionally deprecated and not registered; L3 facts are auto-included in the prompt instead)
 
 To add a new tool:
 1. Create a function in this file
@@ -319,8 +319,17 @@ def get_current_time() -> str:
     )
 
 
+# NOTE: search_memory function kept for backward compatibility but is DEPRECATED
+# It is intentionally NOT registered in TOOL_REGISTRY or tool declarations
+# L3 facts are now automatically retrieved via SLM's search_query and included in the prompt
 async def search_memory(query: str) -> str:
-    """Search long-term memory (L3) for relevant facts (Async)."""
+    """
+    DEPRECATED: Search long-term memory (L3) for relevant facts.
+    
+    This function is no longer exposed as a tool to the main LLM.
+    L3 facts are automatically retrieved via SLM's search_query and included in the prompt.
+    Kept for potential internal use only.
+    """
     if not _memory_manager:
         return "장기 기억 시스템이 비활성화되어 있습니다."
     try:
@@ -528,7 +537,7 @@ TOOL_REGISTRY: Dict[str, Any] = {
     "translate_text": translate_text,
     
     # Memory Tools
-    "search_memory": search_memory,
+    # Note: search_memory removed - L3 facts automatically retrieved and included in prompt
     "get_chat_history": get_chat_history,
 }
 
@@ -728,27 +737,7 @@ def get_tool_declarations() -> types.Tool:
         ),
         
         # === Memory Tools ===
-        types.FunctionDeclaration(
-            name="search_memory",
-            description=(
-                "장기 기억(L3)에서 관련 정보를 검색합니다. "
-                "다음과 같은 경우 사용하세요:\n"
-                "- 사용자의 과거 정보나 설정\n"
-                "- 사용자의 선호도, 생일 등\n"
-                "- 이전 대화에서 저장된 사실\n"
-                "- '내 ~이 뭐였지?' 같은 질문"
-            ),
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "query": types.Schema(
-                        type=types.Type.STRING,
-                        description="검색할 키워드 또는 질문"
-                    ),
-                },
-                required=["query"]
-            )
-        ),
+        # Note: search_memory removed - L3 facts are automatically retrieved by SLM and included in prompt
         types.FunctionDeclaration(
             name="get_chat_history",
             description=(

@@ -251,17 +251,15 @@ class Gatekeeper:
         user_id: str = "unknown",
         user_name: str = "unknown"
     ) -> Dict[str, Any]:
-        """Run analysis using Gemini API (Async with LLMService)."""
-        broadcast_event("slm_process", {"stage": "start", "provider": "gemini"})
+        """Run analysis using Gemini API - Phase 1 (fast decision) only."""
+        broadcast_event("slm_process", {"stage": "start", "provider": "gemini", "phase": 1})
         
         from google.genai import types
         
-        prompt = config.SLM_GATEKEEPER_TEMPLATE.format(
-            current_summary=current_summary,
+        # Phase 1: Fast decision (response/retrieval + search query)
+        prompt = config.SLM_DECISION_TEMPLATE.format(
             recent_history=recent_history,
-            user_input=user_input,
-            user_id=user_id,
-            user_name=user_name
+            user_input=user_input
         )
         
         response = await self.llm_service.generate_content_async(
@@ -277,14 +275,60 @@ class Gatekeeper:
             try:
                 result = json.loads(response.text)
                 result = self._sanitize_output(result)
-                broadcast_event("slm_process", {"stage": "end", "result": result})
+                # Add empty fields for phase 2 (will be filled later if needed)
+                result.update(self._get_empty_phase2_fields())
+                broadcast_event("slm_process", {"stage": "end", "phase": 1, "result": result})
                 return result
             except json.JSONDecodeError:
-                 logger.error("Failed to parse JSON from Gemini Gatekeeper.")
+                 logger.error("Failed to parse JSON from Gemini Gatekeeper Phase 1.")
                  return self._fallback_result()
         
-        logger.warning("Gemini Gatekeeper returned empty or null response.")
+        logger.warning("Gemini Gatekeeper Phase 1 returned empty or null response.")
         return self._fallback_result()
+    
+    async def _run_gemini_extraction(
+        self,
+        user_input: str,
+        current_summary: str,
+        recent_history: str,
+        user_id: str = "unknown",
+        user_name: str = "unknown"
+    ) -> Dict[str, Any]:
+        """Run extraction using Gemini API - Phase 2 (lazy extraction)."""
+        broadcast_event("slm_process", {"stage": "start", "provider": "gemini", "phase": 2})
+        
+        from google.genai import types
+        
+        # Phase 2: Lazy extraction (facts + summary)
+        prompt = config.SLM_EXTRACTION_TEMPLATE.format(
+            user_id=user_id,
+            user_name=user_name,
+            current_summary=current_summary,
+            recent_history=recent_history,
+            user_input=user_input
+        )
+        
+        response = await self.llm_service.generate_content_async(
+            contents=prompt,
+            model=config.slm.api_model_id,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.1,
+            )
+        )
+        
+        if response and response.text:
+            try:
+                result = json.loads(response.text)
+                result = self._sanitize_output(result)
+                broadcast_event("slm_process", {"stage": "end", "phase": 2, "result": result})
+                return result
+            except json.JSONDecodeError:
+                logger.error("Failed to parse JSON from Gemini Gatekeeper Phase 2.")
+                return self._fallback_extraction_result()
+        
+        logger.warning("Gemini Gatekeeper Phase 2 returned empty or null response.")
+        return self._fallback_extraction_result()
 
     async def _run_slm_analysis(
         self, 
@@ -294,15 +338,12 @@ class Gatekeeper:
         user_id: str = "unknown",
         user_name: str = "unknown"
     ) -> Dict[str, Any]:
-        """Run full SLM analysis (Local) - Async wrapper."""
-        broadcast_event("slm_process", {"stage": "start", "provider": "local"})
+        """Run Phase 1 SLM analysis (Local) - Decision only."""
+        broadcast_event("slm_process", {"stage": "start", "provider": "local", "phase": 1})
         
-        prompt = config.SLM_GATEKEEPER_TEMPLATE.format(
-            current_summary=current_summary,
+        prompt = config.SLM_DECISION_TEMPLATE.format(
             recent_history=recent_history,
-            user_input=user_input,
-            user_id=user_id,
-            user_name=user_name
+            user_input=user_input
         )
 
         def _blocking_slm_inference():
@@ -333,6 +374,8 @@ class Gatekeeper:
                         result = self._try_parse_json(accumulated_text)
                         if result is not None:
                             result = self._sanitize_output(result)
+                            # Add empty fields for phase 2
+                            result.update(self._get_empty_phase2_fields())
                             return result
                         
                         start_idx = accumulated_text.find('{')
@@ -356,7 +399,115 @@ class Gatekeeper:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, _blocking_slm_inference)
         
-        broadcast_event("slm_process", {"stage": "end", "result": result})
+        broadcast_event("slm_process", {"stage": "end", "phase": 1, "result": result})
+        return result
+    
+    async def run_extraction(
+        self,
+        user_input: str,
+        current_summary: str,
+        recent_messages: List[Dict[str, str]],
+        user_id: str = "unknown",
+        user_name: str = "unknown"
+    ) -> Dict[str, Any]:
+        """
+        Run Phase 2 extraction (facts + summary) - Can be called separately.
+        This is the lazy extraction that happens after response starts.
+        """
+        cleaned_input = self._strip_call_names(user_input)
+        
+        slm_history_lines = []
+        for msg in recent_messages:
+            role = msg.get('role', 'user').upper()
+            content = msg.get('content', '')
+            if role == 'USER' and msg.get('user_name'):
+                role = msg['user_name']
+            elif role == 'ASSISTANT':
+                role = "Nurireine"
+            
+            slm_history_lines.append(f"{role}: {content}")
+        
+        slm_history = "\n".join(slm_history_lines)
+        
+        if config.slm.provider == "gemini":
+            return await self._run_gemini_extraction(cleaned_input, current_summary, slm_history, user_id, user_name)
+        else:
+            if not self._slm:
+                logger.warning("Local SLM not loaded for extraction, skipping.")
+                return self._fallback_extraction_result()
+            return await self._run_slm_extraction(cleaned_input, current_summary, slm_history, user_id, user_name)
+    
+    async def _run_slm_extraction(
+        self,
+        user_input: str,
+        current_summary: str,
+        recent_history: str,
+        user_id: str = "unknown",
+        user_name: str = "unknown"
+    ) -> Dict[str, Any]:
+        """Run Phase 2 SLM extraction (Local) - Facts and summary."""
+        broadcast_event("slm_process", {"stage": "start", "provider": "local", "phase": 2})
+        
+        prompt = config.SLM_EXTRACTION_TEMPLATE.format(
+            user_id=user_id,
+            user_name=user_name,
+            current_summary=current_summary,
+            recent_history=recent_history,
+            user_input=user_input
+        )
+
+        def _blocking_slm_inference():
+            MAX_RETRIES = 2
+            MAX_CONTINUATIONS = 2
+            
+            for attempt in range(MAX_RETRIES + 1):
+                try:
+                    accumulated_text = ""
+                    current_prompt = prompt
+                    
+                    for cont in range(MAX_CONTINUATIONS + 1):
+                        output = self._slm(
+                            current_prompt,
+                            max_tokens=config.slm.max_tokens,
+                            stop=config.slm.stop_sequences,
+                            grammar=None,
+                            echo=False,
+                            temperature=0.1,
+                            top_p=0.9,
+                            top_k=40
+                        )
+                        
+                        chunk = output['choices'][0]['text'].strip()
+                        accumulated_text += chunk
+                        
+                        # Try to parse the accumulated text
+                        result = self._try_parse_json(accumulated_text)
+                        if result is not None:
+                            result = self._sanitize_output(result)
+                            return result
+                        
+                        start_idx = accumulated_text.find('{')
+                        if start_idx == -1:
+                            break
+                        
+                        # JSON started but incomplete — continue generation
+                        partial_json = accumulated_text[start_idx:]
+                        current_prompt = prompt + "\n```json\n" + partial_json
+                    
+                    if attempt == MAX_RETRIES:
+                        return self._fallback_extraction_result()
+                    
+                except Exception as e:
+                    logger.error(f"SLM extraction error (Attempt {attempt+1}): {e}")
+                    if attempt == MAX_RETRIES:
+                        return self._fallback_extraction_result()
+            return self._fallback_extraction_result()
+
+        # Run blocking inference in executor
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, _blocking_slm_inference)
+        
+        broadcast_event("slm_process", {"stage": "end", "phase": 2, "result": result})
         return result
     
     @staticmethod
@@ -446,12 +597,9 @@ class Gatekeeper:
         }
     
     @staticmethod
-    def _fallback_result() -> Dict[str, Any]:
-        """Return fallback result (response needed, minimal analysis)."""
+    def _get_empty_phase2_fields() -> Dict[str, Any]:
+        """Return empty phase 2 fields (for phase 1 responses)."""
         return {
-            "response_needed": True,
-            "retrieval_needed": False,
-            "search_query": None,
             "guild_facts": [],
             "user_facts": [],
             "summary_updates": {
@@ -461,4 +609,29 @@ class Gatekeeper:
                 "new_point": None,
                 "stage": None
             }
+        }
+    
+    @staticmethod
+    def _fallback_extraction_result() -> Dict[str, Any]:
+        """Return fallback extraction result (phase 2 only)."""
+        return {
+            "guild_facts": [],
+            "user_facts": [],
+            "summary_updates": {
+                "topic": None,
+                "mood": None,
+                "new_topic": None,
+                "new_point": None,
+                "stage": None
+            }
+        }
+    
+    @staticmethod
+    def _fallback_result() -> Dict[str, Any]:
+        """Return fallback result (response needed, minimal analysis)."""
+        return {
+            "response_needed": True,
+            "retrieval_needed": False,
+            "search_query": None,
+            **Gatekeeper._get_empty_phase2_fields()
         }
