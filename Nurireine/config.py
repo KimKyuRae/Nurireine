@@ -6,9 +6,83 @@ Environment variables take precedence over defaults.
 """
 
 import os
+import logging
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List
+
+# Setup logger for config validation
+logger = logging.getLogger(__name__)
+
+
+# ==============================================================================
+# Environment Variable Helpers with Validation and Fallback
+# ==============================================================================
+
+def _get_int_env(key: str, default: int, min_val: int, max_val: int) -> int:
+    """
+    Get integer from environment with validation and fallback.
+    
+    Args:
+        key: Environment variable key
+        default: Default value if not set or invalid
+        min_val: Minimum allowed value
+        max_val: Maximum allowed value
+        
+    Returns:
+        Validated integer value
+    """
+    value_str = os.getenv(key)
+    if value_str is None:
+        return default
+    
+    try:
+        value = int(value_str)
+        if min_val <= value <= max_val:
+            return value
+        else:
+            logger.warning(
+                f"config.{key}={value} out of range [{min_val}, {max_val}], using default={default}"
+            )
+            return default
+    except ValueError:
+        logger.warning(
+            f"config.{key}='{value_str}' is not a valid integer, using default={default}"
+        )
+        return default
+
+
+def _get_float_env(key: str, default: float, min_val: float, max_val: float) -> float:
+    """
+    Get float from environment with validation and fallback.
+    
+    Args:
+        key: Environment variable key
+        default: Default value if not set or invalid
+        min_val: Minimum allowed value
+        max_val: Maximum allowed value
+        
+    Returns:
+        Validated float value
+    """
+    value_str = os.getenv(key)
+    if value_str is None:
+        return default
+    
+    try:
+        value = float(value_str)
+        if min_val <= value <= max_val:
+            return value
+        else:
+            logger.warning(
+                f"config.{key}={value} out of range [{min_val}, {max_val}], using default={default}"
+            )
+            return default
+    except ValueError:
+        logger.warning(
+            f"config.{key}='{value_str}' is not a valid float, using default={default}"
+        )
+        return default
 
 # ==============================================================================
 # Path Configuration
@@ -42,11 +116,12 @@ class DebugConfig:
 @dataclass
 class BotConfig:
     command_prefix: str = "~-"
-    debounce_delay: float = 3.0  # seconds to wait before processing batched messages
-    max_batch_size: int = 10     # maximum messages to process in one batch
-    response_timeout: float = 120.0  # LLM response timeout in seconds
-    typing_speed: float = 0.05   # seconds per character for typing simulation
-    max_typing_delay: float = 2.0
+    debounce_delay: float = field(default_factory=lambda: _get_float_env("DEBOUNCE_DELAY", 3.0, 0.5, 10.0))  # seconds to wait before processing batched messages
+    max_batch_size: int = field(default_factory=lambda: _get_int_env("MAX_BATCH_SIZE", 10, 1, 50))     # maximum messages to process in one batch
+    response_timeout: float = field(default_factory=lambda: _get_float_env("RESPONSE_TIMEOUT", 120.0, 30.0, 300.0))  # LLM response timeout in seconds
+    typing_speed: float = field(default_factory=lambda: _get_float_env("TYPING_SPEED", 0.05, 0.01, 0.2))   # seconds per character for typing simulation
+    max_typing_delay: float = field(default_factory=lambda: _get_float_env("MAX_TYPING_DELAY", 2.0, 0.5, 5.0))
+    max_input_length: int = field(default_factory=lambda: _get_int_env("MAX_INPUT_LENGTH", 2000, 100, 10000))  # Maximum characters in user input
     
     # Trigger words for explicit bot calls
     call_names: List[str] = field(default_factory=lambda: ["누리", "누리야", "누리레인", "누리레느"])
@@ -103,17 +178,17 @@ class SLMConfig:
     model_repo: str = "unsloth/gemma-3-4b-it-GGUF"
     model_filename: str = "gemma-3-4b-it-Q4_K_M.gguf"
 
-    context_size: int = 8192
+    context_size: int = field(default_factory=lambda: _get_int_env("SLM_CONTEXT_SIZE", 8192, 1024, 32768))
     gpu_layers: int = -1  # -1 for all layers on GPU
     
     # SLM Generation Parameters
-    max_tokens: int = 512
-    temperature: float = 0.0
+    max_tokens: int = field(default_factory=lambda: _get_int_env("SLM_MAX_TOKENS", 512, 128, 2048))
+    temperature: float = field(default_factory=lambda: _get_float_env("SLM_TEMPERATURE", 0.0, 0.0, 1.0))
     stop_sequences: List[str] = field(default_factory=lambda: ["<end_of_turn>"])
     
     # BERT Classifier
     bert_model_id: str = "SapoKR/kcbert-munmaeg-onnx"
-    bert_threshold: float = 0.7
+    bert_threshold: float = field(default_factory=lambda: _get_float_env("BERT_THRESHOLD", 0.7, 0.3, 0.95))
 
 
 @dataclass
@@ -127,13 +202,16 @@ class EmbeddingConfig:
 # ==============================================================================
 @dataclass
 class MemoryConfig:
-    l1_buffer_limit: int = 50    # Max messages in L1 buffer per channel
-    l1_context_limit: int = 5    # Messages to include in SLM analysis context
-    l1_llm_context_limit: int = 3  # Minimal recent messages to include in LLM prompt (for conversational coherence)
-    l3_retrieval_count: int = 5  # Number of facts to retrieve from vector DB
-    l3_similarity_threshold: float = 0.35 # Threshold for L3 Duplicate Check
+    l1_buffer_limit: int = field(default_factory=lambda: _get_int_env("L1_BUFFER_LIMIT", 50, 10, 200))    # Max messages in L1 buffer per channel
+    l1_context_limit: int = field(default_factory=lambda: _get_int_env("L1_CONTEXT_LIMIT", 5, 3, 20))    # Messages to include in SLM analysis context
+    l1_llm_context_limit: int = field(default_factory=lambda: _get_int_env("L1_LLM_CONTEXT_LIMIT", 3, 1, 10))  # Minimal recent messages to include in LLM prompt (for conversational coherence)
+    l1_sliding_window: int = field(default_factory=lambda: _get_int_env("L1_SLIDING_WINDOW", 10, 5, 50))  # Sliding window for short-term memory
+    l3_retrieval_count: int = field(default_factory=lambda: _get_int_env("L3_RETRIEVAL_COUNT", 5, 1, 20))  # Number of facts to retrieve from vector DB
+    l3_similarity_threshold: float = field(default_factory=lambda: _get_float_env("L3_SIMILARITY_THRESHOLD", 0.35, 0.1, 0.9)) # Threshold for L3 Duplicate Check
+    l3_ttl_days: int = field(default_factory=lambda: _get_int_env("L3_TTL_DAYS", 90, 1, 365))  # Default TTL for L3 memories in days
     collection_name: str = "long_term_memory_korean"
-    analysis_interval: int = 5   # Run SLM analysis every N messages (offer.md §2-가)
+    analysis_interval: int = field(default_factory=lambda: _get_int_env("ANALYSIS_INTERVAL", 5, 1, 20))   # Run SLM analysis every N messages (offer.md §2-가)
+    show_source_tags: bool = field(default_factory=lambda: os.getenv("SHOW_MEMORY_SOURCE_TAGS", "false").lower() == "true")  # Show L1/L2/L3 tags in responses
 
 
 # ==============================================================================
