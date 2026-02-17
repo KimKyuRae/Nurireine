@@ -7,7 +7,7 @@ Tool Categories:
 1. Search Tools: web_search, github_search, youtube_search, news_search, image_search
 2. Utility Tools: get_current_time, calculate
 3. Translation Tools: translate_text
-4. Memory Tools: get_chat_history (search_memory removed - L3 facts auto-included in prompt)
+4. Memory Tools: get_chat_history (legacy search_memory implementation remains in this file but is intentionally deprecated and not registered; L3 facts are auto-included in the prompt instead)
 
 To add a new tool:
 1. Create a function in this file
