@@ -913,18 +913,15 @@ class MemoryManager:
             l3_context = ""
             if should_retrieve:
                 t0 = time.time()
-                # If explicit query from SLM is missing, use enhanced keyword extraction
+                # Use SLM-provided query if available, otherwise fall back to cleaned user input
                 query = analysis.get("search_query")
                 if not query or query.strip() == "":
-                    from ..utils.text_cleaner import clean_query_text, extract_search_keywords
-                    # First clean the input (remove mentions, reply headers, etc.)
-                    cleaned = clean_query_text(user_input)
-                    # Then extract meaningful keywords for search
-                    query = extract_search_keywords(cleaned)
-                    # If still empty after extraction, use the cleaned input as last resort
+                    from ..utils.text_cleaner import clean_query_text
+                    # Simple fallback: just clean the input (remove mentions, reply headers, etc.)
+                    query = clean_query_text(user_input)
                     if not query:
-                        query = cleaned if cleaned else user_input
-                    logger.info(f"SLM search_query was empty, using fallback extraction: '{query}' (from: '{user_input}')")
+                        query = user_input
+                    logger.info(f"SLM search_query was empty, using cleaned input: '{query}' (from: '{user_input}')")
                 else:
                     logger.info(f"Using SLM-provided search_query: '{query}'")
 
