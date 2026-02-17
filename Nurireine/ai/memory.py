@@ -393,9 +393,67 @@ class MemoryManager:
                 cleaned += 1
         
         if cleaned > 0:
-            logger.info(f"Cleaned up {cleaned} stale L2 summaries.")
+            logger.info(
+                f"event=l2_cleanup_completed "
+                f"cleaned_count={cleaned}"
+            )
         
         return cleaned
+    
+    async def cleanup_expired_l3_memories(self) -> int:
+        """
+        Remove L3 memories that have exceeded their TTL.
+        
+        Returns:
+            Number of memories cleaned up
+        """
+        if not self._chroma_healthy:
+            logger.warning("event=l3_cleanup_skipped reason=chromadb_unhealthy")
+            return 0
+        
+        loop = asyncio.get_running_loop()
+        
+        def _blocking_cleanup():
+            try:
+                current_time = time.time()
+                
+                # Get all memories
+                all_memories = self._collection.get()
+                
+                if not all_memories or not all_memories['ids']:
+                    return 0
+                
+                expired_ids = []
+                
+                for i, memory_id in enumerate(all_memories['ids']):
+                    metadata = all_memories['metadatas'][i] if all_memories['metadatas'] else {}
+                    
+                    # Skip lore (permanent knowledge)
+                    if metadata.get('context') == 'lore':
+                        continue
+                    
+                    timestamp = metadata.get('timestamp', current_time)
+                    ttl_days = metadata.get('ttl_days', config.memory.l3_ttl_days)
+                    age_days = (current_time - timestamp) / 86400
+                    
+                    if age_days > ttl_days:
+                        expired_ids.append(memory_id)
+                
+                # Delete expired memories
+                if expired_ids:
+                    self._collection.delete(ids=expired_ids)
+                    logger.info(
+                        f"event=l3_cleanup_completed "
+                        f"expired_count={len(expired_ids)}"
+                    )
+                
+                return len(expired_ids)
+                
+            except Exception as e:
+                logger.error(f"event=l3_cleanup_failed error={str(e)}")
+                return 0
+        
+        return await loop.run_in_executor(None, _blocking_cleanup)
     
     def _enforce_l2_cache_limit(self) -> None:
         """Remove oldest L2 summaries if cache exceeds limit (Deprecated sync call, logic moved to async methods)."""
@@ -491,14 +549,80 @@ class MemoryManager:
                 
             buffer.append(msg_data)
             
+            # Implement sliding window with automatic evaporation
             if len(buffer) > config.memory.l1_buffer_limit:
-                buffer.pop(0)
+                # Remove oldest messages beyond sliding window
+                num_to_remove = len(buffer) - config.memory.l1_sliding_window
+                if num_to_remove > 0:
+                    # Extract oldest messages for potential summarization
+                    old_messages = buffer[:num_to_remove]
+                    
+                    # Remove from buffer (evaporation)
+                    del buffer[:num_to_remove]
+                    
+                    # Log evaporation for debugging
+                    logger.debug(
+                        f"event=l1_evaporation "
+                        f"channel_id={channel_id} "
+                        f"removed_count={num_to_remove} "
+                        f"remaining={len(buffer)}"
+                    )
+                    
+                    # Optional: Trigger async summarization of evaporated messages
+                    # This could be enhanced to extract key points before evaporation
+                    if num_to_remove >= 5:  # Only summarize if substantial
+                        asyncio.create_task(
+                            self._summarize_evaporated_messages(
+                                channel_id, old_messages
+                            )
+                        )
     
     async def clear_l1_buffer(self, channel_id: int) -> None:
         """Clear the L1 buffer for a channel (Async)."""
         async with self._l1_lock:
             if channel_id in self._l1_buffers:
                 self._l1_buffers[channel_id].clear()
+    
+    async def _summarize_evaporated_messages(
+        self, 
+        channel_id: int, 
+        messages: List[Dict[str, str]]
+    ) -> None:
+        """
+        Summarize evaporated L1 messages and merge into L2.
+        
+        This helps preserve important context from older messages
+        that have been removed from the sliding window.
+        """
+        try:
+            # Extract key points from evaporated messages
+            message_texts = [
+                f"{msg.get('user_name', 'User')}: {msg['content']}" 
+                for msg in messages if msg.get('role') == 'user'
+            ]
+            
+            if not message_texts:
+                return
+            
+            # Create a brief summary
+            summary_text = "이전 대화 내용: " + "; ".join(message_texts[:3])
+            
+            # Add to L2 key points
+            await self.update_l2_fields(
+                channel_id,
+                new_point=summary_text
+            )
+            
+            logger.debug(
+                f"event=evaporated_messages_summarized "
+                f"channel_id={channel_id} "
+                f"message_count={len(messages)}"
+            )
+        except Exception as e:
+            logger.error(
+                f"event=summarize_evaporated_failed "
+                f"error={str(e)}"
+            )
     
     # =========================================================================
     # L2 Summary Operations (Markdown-based)
@@ -705,7 +829,10 @@ class MemoryManager:
                         "context": context_type, 
                         "timestamp": time.time(),
                         "topic": str(topic) if topic else "general",
-                        "keywords": keywords_str
+                        "keywords": keywords_str,
+                        "score": 1.0,  # Initial score for trust-based merging
+                        "ttl_days": config.memory.l3_ttl_days,  # Time-to-live in days
+                        "access_count": 0  # Track retrieval frequency
                     }
                     if context_type == "guild" and context_id:
                         meta["guild_id"] = str(context_id)
@@ -722,8 +849,13 @@ class MemoryManager:
                     metadatas=metadatas,
                     ids=ids
                 )
+                logger.debug(
+                    f"event=facts_saved "
+                    f"context={context_type} "
+                    f"count={len(unique_facts)}"
+                )
             except Exception as e:
-                logger.error(f"Failed to save facts to L3: {e}")
+                logger.error(f"event=save_facts_failed error={str(e)}")
 
         await loop.run_in_executor(None, _blocking_save)
     
@@ -734,7 +866,12 @@ class MemoryManager:
         user_id: Optional[str] = None
     ) -> str:
         """
-        Retrieve relevant facts from L3 memory (Async wrapper).
+        Retrieve relevant facts from L3 memory with recency weighting (Async wrapper).
+        
+        Memories are scored based on:
+        - Semantic similarity (from ChromaDB)
+        - Recency (recent memories get higher weight)
+        - Trust score (from previous interactions)
         """
         if not query:
             return ""
@@ -742,18 +879,33 @@ class MemoryManager:
         loop = asyncio.get_running_loop()
         
         def _blocking_retrieve():
-            retrieved_docs = []
+            retrieved_items = []
+            current_time = time.time()
+            
             try:
+                # Retrieve lore facts (base knowledge)
                 lore_results = self._collection.query(
                     query_texts=[query],
                     n_results=2, 
                     where={"context": "lore"}
                 )
                 if lore_results['documents'] and lore_results['documents'][0]:
-                     retrieved_docs.extend(lore_results['documents'][0])
+                    for i, doc in enumerate(lore_results['documents'][0]):
+                        metadata = lore_results['metadatas'][0][i] if lore_results['metadatas'] else {}
+                        distance = lore_results['distances'][0][i] if lore_results['distances'] else 1.0
+                        
+                        # Calculate composite score
+                        timestamp = metadata.get('timestamp', current_time)
+                        age_days = (current_time - timestamp) / 86400
+                        recency_weight = 1.0 / (1.0 + age_days / 30.0)  # Decay over 30 days
+                        trust_score = metadata.get('score', 1.0)
+                        
+                        composite_score = (1.0 - distance) * trust_score * recency_weight
+                        retrieved_items.append((doc, composite_score, metadata))
             except Exception as e:
-                pass
+                logger.debug(f"event=lore_retrieval_failed error={str(e)}")
 
+            # Retrieve user/guild-specific facts
             conditions = []
             if guild_id:
                 conditions.append({"guild_id": str(guild_id)})
@@ -761,30 +913,64 @@ class MemoryManager:
                 conditions.append({"user_id": str(user_id)})
             
             if conditions:
-                where_clause = {"$or": conditions} if len(conditions) > 1 else conditions[0]
-                user_results = self._collection.query(
-                    query_texts=[query],
-                    n_results=4, # Prioritize user/guild facts
-                    where=where_clause
-                )
-                if user_results['documents'] and user_results['documents'][0]:
-                    retrieved_docs.extend(user_results['documents'][0])
+                try:
+                    where_clause = {"$or": conditions} if len(conditions) > 1 else conditions[0]
+                    user_results = self._collection.query(
+                        query_texts=[query],
+                        n_results=4,  # Prioritize user/guild facts
+                        where=where_clause
+                    )
+                    if user_results['documents'] and user_results['documents'][0]:
+                        for i, doc in enumerate(user_results['documents'][0]):
+                            metadata = user_results['metadatas'][0][i] if user_results['metadatas'] else {}
+                            distance = user_results['distances'][0][i] if user_results['distances'] else 1.0
+                            
+                            # Calculate composite score with stronger recency weight for user facts
+                            timestamp = metadata.get('timestamp', current_time)
+                            age_days = (current_time - timestamp) / 86400
+                            recency_weight = 1.0 / (1.0 + age_days / 7.0)  # Faster decay (7 days)
+                            trust_score = metadata.get('score', 1.0)
+                            
+                            composite_score = (1.0 - distance) * trust_score * recency_weight
+                            retrieved_items.append((doc, composite_score, metadata))
+                            
+                            # Update access count for retrieved memories
+                            try:
+                                doc_id = user_results['ids'][0][i] if user_results['ids'] else None
+                                if doc_id:
+                                    access_count = metadata.get('access_count', 0) + 1
+                                    self._collection.update(
+                                        ids=[doc_id],
+                                        metadatas=[{**metadata, 'access_count': access_count}]
+                                    )
+                            except Exception as e:
+                                logger.debug(f"event=access_count_update_failed error={str(e)}")
+                except Exception as e:
+                    logger.debug(f"event=user_retrieval_failed error={str(e)}")
             
+            # Sort by composite score and deduplicate
+            retrieved_items.sort(key=lambda x: x[1], reverse=True)
             unique_docs = []
             seen = set()
-            for doc in retrieved_docs:
+            for doc, score, metadata in retrieved_items[:config.memory.l3_retrieval_count]:
                 if doc not in seen:
                     unique_docs.append(doc)
                     seen.add(doc)
             
             if unique_docs:
-                return "\n".join([f"- {text}" for text in unique_docs])
+                result = "\n".join([f"- {text}" for text in unique_docs])
+                logger.debug(
+                    f"event=facts_retrieved "
+                    f"count={len(unique_docs)} "
+                    f"query_length={len(query)}"
+                )
+                return result
             return "관련된 기억이 없습니다."
 
         try:
             return await loop.run_in_executor(None, _blocking_retrieve)
         except Exception as e:
-            logger.error(f"Fact retrieval failed: {e}")
+            logger.error(f"event=fact_retrieval_failed error={str(e)}")
             return ""
     
     # =========================================================================
