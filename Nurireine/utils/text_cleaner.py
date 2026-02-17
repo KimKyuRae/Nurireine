@@ -90,21 +90,26 @@ def extract_search_keywords(text: str) -> str:
     # Korean particles that are often attached to nouns: 가, 이, 을, 를, 은, 는, 로, 의
     # We'll strip them from the end of words (but not standalone)
     particle_suffixes = ['가', '이', '을', '를', '은', '는', '로', '의']
+    particles_set = {'가', '이', '을', '를', '은', '는', '에', '에서', '에게', '한테', 
+                     '와', '과', '도', '만', '부터', '까지', '의', '로'}
     words = result.split()
     cleaned_words = []
     for word in words:
-        # Skip if word is too short (1 char)
-        if len(word) <= 1:
-            cleaned_words.append(word)
+        # Skip single-character particles entirely
+        if len(word) == 1 and word in particles_set:
             continue
-        # If word ends with a particle, remove it (but keep the rest of the word)
-        stripped = False
-        for suffix in particle_suffixes:
-            if word.endswith(suffix) and len(word) > len(suffix):
-                cleaned_words.append(word[:-len(suffix)])
-                stripped = True
-                break
-        if not stripped:
+        # If word is longer and ends with a particle, remove it
+        if len(word) > 1:
+            stripped = False
+            for suffix in particle_suffixes:
+                if word.endswith(suffix):
+                    cleaned_words.append(word[:-len(suffix)])
+                    stripped = True
+                    break
+            if not stripped:
+                cleaned_words.append(word)
+        else:
+            # Single char but not a particle
             cleaned_words.append(word)
     result = ' '.join(cleaned_words)
     

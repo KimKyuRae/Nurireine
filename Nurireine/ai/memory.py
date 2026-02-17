@@ -924,7 +924,9 @@ class MemoryManager:
                     # If still empty after extraction, use the cleaned input as last resort
                     if not query:
                         query = cleaned if cleaned else user_input
-                    logger.info(f"SLM search_query was empty, extracted fallback query: '{query}'")
+                    logger.info(f"SLM search_query was empty, using fallback extraction: '{query}' (from: '{user_input}')")
+                else:
+                    logger.info(f"Using SLM-provided search_query: '{query}'")
 
                 logger.info(f"Retrieving L3 facts for query: '{query}' (Guild: {guild_id}, User: {user_id})")
                 l3_context = await self.retrieve_facts(query, guild_id, user_id)
