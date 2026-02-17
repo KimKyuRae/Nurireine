@@ -49,7 +49,7 @@ class DatabaseManager:
         try:
             migration_success = run_auto_migration(self.db_path)
             if not migration_success:
-                logger.warning("event=migration_warning message='Migrations completed with warnings'")
+                logger.error("event=migration_error message='Auto-migration failed'")
         except Exception as e:
             logger.error(f"event=migration_error error={str(e)}")
             # Continue with initialization even if migration fails

@@ -266,7 +266,7 @@ class CoreCommands(commands.Cog):
         """(Owner Only) Sync slash commands to Discord."""
         await ctx.bot.tree.sync()
         await ctx.send("✅ Commands synced!")
-        logger.info("event=commands_synced user={ctx.author.id}")
+        logger.info(f"event=commands_synced user={ctx.author.id}")
     
     @commands.hybrid_command(
         name='testtimer',

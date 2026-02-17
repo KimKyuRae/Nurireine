@@ -237,10 +237,10 @@ def get_migrations() -> List[Migration]:
         version=1,
         description="Initial schema with active_channels, channel_summaries, chat_logs",
         up_sql="""
-            -- This migration represents the existing schema
-            -- It's a no-op since these tables should already exist
-            -- But we record it for version tracking
-            SELECT 1;
+            -- Baseline migration: Tables created by initial DatabaseManager._init_db()
+            -- This migration records the existing schema state for version tracking
+            -- No schema changes needed as tables already exist
+            SELECT 1 WHERE 1=0;  -- No-op: tables created by DatabaseManager
         """
     ))
     
@@ -261,15 +261,16 @@ def get_migrations() -> List[Migration]:
         down_sql="DROP TABLE IF EXISTS channel_policies;"
     ))
     
-    # Migration 003: Add L3 memory metadata fields
+    # Migration 003: L3 memory metadata enhancement (programmatic)
     migrations.append(Migration(
         version=3,
-        description="Add L3 memory lifecycle fields (timestamp, score, ttl_days) to support memory management",
+        description="L3 memory lifecycle fields (timestamp, score, ttl_days) - enhanced programmatically in memory module",
         up_sql="""
-            -- Note: ChromaDB metadata will be enhanced programmatically
-            -- This migration is a placeholder for documentation
-            -- Actual L3 schema changes are handled in the memory module
-            SELECT 1;
+            -- Note: L3 memory is stored in ChromaDB (not SQLite)
+            -- Metadata fields (timestamp, score, ttl_days, access_count) are added
+            -- programmatically when saving facts in memory.save_facts()
+            -- This migration exists for documentation and version tracking only
+            SELECT 1 WHERE 1=0;  -- No-op: ChromaDB metadata managed in memory.py
         """
     ))
     

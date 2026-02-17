@@ -550,9 +550,12 @@ class MemoryManager:
             buffer.append(msg_data)
             
             # Implement sliding window with automatic evaporation
+            # When buffer exceeds limit, trim to sliding window size
             if len(buffer) > config.memory.l1_buffer_limit:
-                # Remove oldest messages beyond sliding window
-                num_to_remove = len(buffer) - config.memory.l1_sliding_window
+                # Calculate how many messages to keep (sliding window)
+                target_size = config.memory.l1_sliding_window
+                num_to_remove = len(buffer) - target_size
+                
                 if num_to_remove > 0:
                     # Extract oldest messages for potential summarization
                     old_messages = buffer[:num_to_remove]

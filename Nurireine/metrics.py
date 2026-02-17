@@ -269,7 +269,8 @@ def get_metrics_collector() -> MetricsCollector:
     global _metrics_collector
     if _metrics_collector is None:
         import os
-        reset_hours = int(os.getenv("METRICS_RESET_HOURS", "24"))
+        from .config import _get_int_env
+        reset_hours = _get_int_env("METRICS_RESET_HOURS", 24, 1, 168)  # 1 hour to 1 week
         _metrics_collector = MetricsCollector(reset_hours=reset_hours)
     return _metrics_collector
 
