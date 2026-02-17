@@ -917,18 +917,27 @@ class MemoryManager:
                 broadcast_event("memory_access", {"stage": "retrieved", "query": query, "found": bool(l3_context)})
             
             # === PHASE 2: Lazy extraction (facts + summary) - Run in background ===
+            # Capture consistent snapshot of conversation state for background task
+            # This avoids race conditions if l1_buffer is modified while extraction runs
+            l2_snapshot = l2_summary.to_markdown()
+            l1_snapshot = list(l1_buffer)  # Create a copy of the list
+            
             # Schedule extraction to run asynchronously after response starts
             extraction_task = asyncio.create_task(
                 self._run_lazy_extraction(
-                    channel_id, user_input, l2_summary.to_markdown(), l1_buffer,
+                    channel_id, user_input, l2_snapshot, l1_snapshot,
                     user_id, user_name, guild_id
                 )
             )
-            # Add error handler to log exceptions
-            extraction_task.add_done_callback(
-                lambda t: logger.error(f"Lazy extraction task failed: {t.exception()}")
-                if t.exception() else None
-            )
+            # Add error handler to log exceptions with full traceback
+            def _log_extraction_error(task: asyncio.Task) -> None:
+                try:
+                    # Will raise if the task failed
+                    task.result()
+                except Exception as e:
+                    logger.error(f"Lazy extraction task failed: {e}", exc_info=True)
+            
+            extraction_task.add_done_callback(_log_extraction_error)
         else:
             # Skip full SLM analysis — BERT already confirmed response is needed
             logger.info(f"Skipping SLM analysis (dirty_count={dirty_count}/{analysis_interval}), BERT confirmed response needed")

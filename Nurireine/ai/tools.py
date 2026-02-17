@@ -319,8 +319,17 @@ def get_current_time() -> str:
     )
 
 
+# NOTE: search_memory function kept for backward compatibility but is DEPRECATED
+# It is intentionally NOT registered in TOOL_REGISTRY or tool declarations
+# L3 facts are now automatically retrieved via SLM's search_query and included in the prompt
 async def search_memory(query: str) -> str:
-    """Search long-term memory (L3) for relevant facts (Async)."""
+    """
+    DEPRECATED: Search long-term memory (L3) for relevant facts.
+    
+    This function is no longer exposed as a tool to the main LLM.
+    L3 facts are automatically retrieved via SLM's search_query and included in the prompt.
+    Kept for potential internal use only.
+    """
     if not _memory_manager:
         return "장기 기억 시스템이 비활성화되어 있습니다."
     try:
