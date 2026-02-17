@@ -363,104 +363,7 @@ async def get_chat_history(limit: int = 10) -> str:
         return f"대화 이력 조회 중 오류가 발생했습니다: {e}"
 
 
-def calculate(expression: str) -> str:
-    """
-    Perform mathematical calculations.
-    Supports basic arithmetic, powers, and common math functions.
-    """
-    try:
-        # Safe evaluation - only allow math operations
-        import ast
-        import math
-        import operator
-        
-        # Allowed operators and functions
-        allowed_operators = {
-            ast.Add: operator.add,
-            ast.Sub: operator.sub,
-            ast.Mult: operator.mul,
-            ast.Div: operator.truediv,
-            ast.Pow: operator.pow,
-            ast.USub: operator.neg,
-            ast.UAdd: operator.pos,
-            ast.Mod: operator.mod,
-            ast.FloorDiv: operator.floordiv,
-        }
-        
-        allowed_functions = {
-            'abs': abs,
-            'round': round,
-            'max': max,
-            'min': min,
-            'sum': sum,
-            'sqrt': math.sqrt,
-            'sin': math.sin,
-            'cos': math.cos,
-            'tan': math.tan,
-            'log': math.log,
-            'log10': math.log10,
-            'exp': math.exp,
-        }
-        
-        allowed_constants = {
-            'pi': math.pi,
-            'e': math.e,
-        }
-        
-        def eval_node(node):
-            if isinstance(node, ast.Constant):
-                return node.value
-            elif isinstance(node, ast.BinOp):
-                left = eval_node(node.left)
-                right = eval_node(node.right)
-                op = allowed_operators.get(type(node.op))
-                if op:
-                    return op(left, right)
-                raise ValueError(f"지원하지 않는 연산자: {type(node.op).__name__}")
-            elif isinstance(node, ast.UnaryOp):
-                operand = eval_node(node.operand)
-                op = allowed_operators.get(type(node.op))
-                if op:
-                    return op(operand)
-                raise ValueError(f"지원하지 않는 단항 연산자: {type(node.op).__name__}")
-            elif isinstance(node, ast.Call):
-                if not isinstance(node.func, ast.Name):
-                    raise ValueError("지원하지 않는 함수 호출 형식입니다.")
-                func_name = node.func.id
-                if func_name not in allowed_functions:
-                    raise ValueError(f"지원하지 않는 함수: {func_name}")
-                args = [eval_node(arg) for arg in node.args]
-                return allowed_functions[func_name](*args)
-            elif isinstance(node, ast.Name):
-                # Check constants first
-                if node.id in allowed_constants:
-                    return allowed_constants[node.id]
-                raise ValueError(f"알 수 없는 변수: {node.id}")
-            elif isinstance(node, ast.List):
-                return [eval_node(item) for item in node.elts]
-            else:
-                raise ValueError(f"지원하지 않는 표현식 타입: {type(node).__name__}")
-        
-        # Parse and evaluate
-        tree = ast.parse(expression, mode='eval')
-        result = eval_node(tree.body)
-        
-        # Format result
-        if isinstance(result, float):
-            if result.is_integer():
-                return f"계산 결과: {int(result)}"
-            else:
-                return f"계산 결과: {result:.10g}"
-        else:
-            return f"계산 결과: {result}"
-    
-    except SyntaxError:
-        return f"수식 오류: 올바른 수식이 아닙니다. ({expression})"
-    except ZeroDivisionError:
-        return "계산 오류: 0으로 나눌 수 없습니다."
-    except Exception as e:
-        logger.error(f"Calculate error: {type(e).__name__}: {e}")
-        return f"계산 중 오류가 발생했습니다: {e}"
+
 
 
 def translate_text(text: str, target_language: str = "ko") -> str:
@@ -619,7 +522,7 @@ TOOL_REGISTRY: Dict[str, Any] = {
     
     # Utility Tools
     "get_current_time": get_current_time,
-    "calculate": calculate,
+
     
     # Translation Tools
     "translate_text": translate_text,
@@ -799,29 +702,7 @@ def get_tool_declarations() -> types.Tool:
                 properties={},
             )
         ),
-        types.FunctionDeclaration(
-            name="calculate",
-            description=(
-                "수학 계산을 수행합니다. "
-                "다음과 같은 경우 반드시 사용하세요:\n"
-                "- 사칙연산 (덧셈, 뺄셈, 곱셈, 나눗셈)\n"
-                "- 거듭제곱, 제곱근\n"
-                "- 삼각함수 (sin, cos, tan)\n"
-                "- 로그 함수 (log, log10)\n"
-                "지원 함수: abs, round, max, min, sum, sqrt, sin, cos, tan, log, log10, exp, pi, e\n"
-                "예: '2 + 3', 'sqrt(16)', 'sin(pi/2)', '2**10'"
-            ),
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "expression": types.Schema(
-                        type=types.Type.STRING,
-                        description="계산할 수식 (예: '2 + 3 * 4', 'sqrt(16)', 'sin(pi/2)')"
-                    ),
-                },
-                required=["expression"]
-            )
-        ),
+
         
         # === Translation Tools ===
         types.FunctionDeclaration(

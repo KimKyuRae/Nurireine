@@ -271,7 +271,7 @@ class MemoryManager:
         # L2: Channel ID -> L2Summary object with access timestamps
         self._l2_summaries: Dict[int, L2Summary] = {}
         self._l2_access_times: Dict[int, float] = {}  # Track last access for LRU cleanup
-        self._load_summaries_from_db()
+        self._load_initial_summaries()
         
         # L3: ChromaDB collection
         self._chroma_healthy = False
@@ -286,20 +286,27 @@ class MemoryManager:
         self._initialize_lore()
     
     async def _load_summaries_from_db(self) -> None:
-        """Load L2 summaries from database (Async)."""
+        """Deprecated: Use _load_initial_summaries instead."""
+        pass
+
+    def _load_initial_summaries(self) -> None:
+        """Load initial L2 summaries from database (Sync, for init)."""
         if not self.db:
             return
         
-        loop = asyncio.get_running_loop()
-        loaded = await loop.run_in_executor(None, self.db.load_channel_summaries)
-        
-        if loaded:
-            current_time = time.time()
-            async with self._l2_lock:
+        # We are in a worker thread (from bot.py), so blocking IO is fine.
+        try:
+            loaded = self.db.load_channel_summaries()
+            
+            if loaded:
+                current_time = time.time()
+                # No lock needed during initialization
                 for channel_id, md_text in loaded.items():
                     self._l2_summaries[channel_id] = L2Summary.from_markdown(md_text)
                     self._l2_access_times[channel_id] = current_time
-            logger.info(f"Loaded L2 summaries for {len(loaded)} channels from DB.")
+                logger.info(f"Loaded L2 summaries for {len(loaded)} channels from DB.")
+        except Exception as e:
+            logger.error(f"Failed to load initial summaries: {e}")
     
     def _init_vector_db(self) -> None:
         """Initialize ChromaDB with custom embedding function."""
@@ -906,7 +913,17 @@ class MemoryManager:
             l3_context = ""
             if should_retrieve:
                 t0 = time.time()
-                query = analysis.get("search_query") or user_input
+                # If explicit query from SLM is missing, use user_input BUT clean it first
+                query = analysis.get("search_query")
+                if not query:
+                    from ..utils.text_cleaner import clean_query_text
+                    # Use cleaned input as fallback
+                    query = clean_query_text(user_input)
+                    # If cleaned query is empty (e.g. only mentions), use original input as last resort?
+                    # Or maybe skip? Let's use original if cleaned is empty to be safe, but usually cleaned is better.
+                    if not query:
+                        query = user_input
+
                 logger.info(f"Retrieving L3 facts for query: '{query}' (Guild: {guild_id}, User: {user_id})")
                 l3_context = await self.retrieve_facts(query, guild_id, user_id)
                 stats["l3_search"] = time.time() - t0
