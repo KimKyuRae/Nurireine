@@ -918,11 +918,16 @@ class MemoryManager:
             
             # === PHASE 2: Lazy extraction (facts + summary) - Run in background ===
             # Schedule extraction to run asynchronously after response starts
-            asyncio.create_task(
+            extraction_task = asyncio.create_task(
                 self._run_lazy_extraction(
                     channel_id, user_input, l2_summary.to_markdown(), l1_buffer,
                     user_id, user_name, guild_id
                 )
+            )
+            # Add error handler to log exceptions
+            extraction_task.add_done_callback(
+                lambda t: logger.error(f"Lazy extraction task failed: {t.exception()}")
+                if t.exception() else None
             )
         else:
             # Skip full SLM analysis — BERT already confirmed response is needed

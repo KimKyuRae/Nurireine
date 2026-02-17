@@ -276,11 +276,7 @@ class Gatekeeper:
                 result = json.loads(response.text)
                 result = self._sanitize_output(result)
                 # Add empty fields for phase 2 (will be filled later if needed)
-                result.setdefault("guild_facts", [])
-                result.setdefault("user_facts", [])
-                result.setdefault("summary_updates", {
-                    "topic": None, "mood": None, "new_topic": None, "new_point": None, "stage": None
-                })
+                result.update(self._get_empty_phase2_fields())
                 broadcast_event("slm_process", {"stage": "end", "phase": 1, "result": result})
                 return result
             except json.JSONDecodeError:
@@ -329,10 +325,10 @@ class Gatekeeper:
                 return result
             except json.JSONDecodeError:
                 logger.error("Failed to parse JSON from Gemini Gatekeeper Phase 2.")
-                return {"guild_facts": [], "user_facts": [], "summary_updates": {}}
+                return self._fallback_extraction_result()
         
         logger.warning("Gemini Gatekeeper Phase 2 returned empty or null response.")
-        return {"guild_facts": [], "user_facts": [], "summary_updates": {}}
+        return self._fallback_extraction_result()
 
     async def _run_slm_analysis(
         self, 
@@ -379,11 +375,7 @@ class Gatekeeper:
                         if result is not None:
                             result = self._sanitize_output(result)
                             # Add empty fields for phase 2
-                            result.setdefault("guild_facts", [])
-                            result.setdefault("user_facts", [])
-                            result.setdefault("summary_updates", {
-                                "topic": None, "mood": None, "new_topic": None, "new_point": None, "stage": None
-                            })
+                            result.update(self._get_empty_phase2_fields())
                             return result
                         
                         start_idx = accumulated_text.find('{')
@@ -442,7 +434,7 @@ class Gatekeeper:
         else:
             if not self._slm:
                 logger.warning("Local SLM not loaded for extraction, skipping.")
-                return {"guild_facts": [], "user_facts": [], "summary_updates": {}}
+                return self._fallback_extraction_result()
             return await self._run_slm_extraction(cleaned_input, current_summary, slm_history, user_id, user_name)
     
     async def _run_slm_extraction(
@@ -503,13 +495,13 @@ class Gatekeeper:
                         current_prompt = prompt + "\n```json\n" + partial_json
                     
                     if attempt == MAX_RETRIES:
-                        return {"guild_facts": [], "user_facts": [], "summary_updates": {}}
+                        return self._fallback_extraction_result()
                     
                 except Exception as e:
                     logger.error(f"SLM extraction error (Attempt {attempt+1}): {e}")
                     if attempt == MAX_RETRIES:
-                        return {"guild_facts": [], "user_facts": [], "summary_updates": {}}
-            return {"guild_facts": [], "user_facts": [], "summary_updates": {}}
+                        return self._fallback_extraction_result()
+            return self._fallback_extraction_result()
 
         # Run blocking inference in executor
         loop = asyncio.get_running_loop()
@@ -605,12 +597,9 @@ class Gatekeeper:
         }
     
     @staticmethod
-    def _fallback_result() -> Dict[str, Any]:
-        """Return fallback result (response needed, minimal analysis)."""
+    def _get_empty_phase2_fields() -> Dict[str, Any]:
+        """Return empty phase 2 fields (for phase 1 responses)."""
         return {
-            "response_needed": True,
-            "retrieval_needed": False,
-            "search_query": None,
             "guild_facts": [],
             "user_facts": [],
             "summary_updates": {
@@ -620,4 +609,29 @@ class Gatekeeper:
                 "new_point": None,
                 "stage": None
             }
+        }
+    
+    @staticmethod
+    def _fallback_extraction_result() -> Dict[str, Any]:
+        """Return fallback extraction result (phase 2 only)."""
+        return {
+            "guild_facts": [],
+            "user_facts": [],
+            "summary_updates": {
+                "topic": None,
+                "mood": None,
+                "new_topic": None,
+                "new_point": None,
+                "stage": None
+            }
+        }
+    
+    @staticmethod
+    def _fallback_result() -> Dict[str, Any]:
+        """Return fallback result (response needed, minimal analysis)."""
+        return {
+            "response_needed": True,
+            "retrieval_needed": False,
+            "search_query": None,
+            **Gatekeeper._get_empty_phase2_fields()
         }
